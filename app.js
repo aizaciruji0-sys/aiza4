@@ -113,10 +113,23 @@ const TI=s=>K.shs.indexOf(s),
 const K={
   u:L.u||'',cur:'penjualan',v:'dash',hist:[],idx:null,page:1,sort:0,dir:1,grid:false,
   conf:null,prefill:null,parent:null,receiptRaw:'',prodIdx:null,readyOnly:false,
-  df:{u:'',from:'',to:'',kat:''},store:{...HARD.store},
+  df:{u:'',from:'',to:'',kat:''},
   shs:[...HARD.shs],cols:JSON.parse(JSON.stringify(HARD.cols)),vis:JSON.parse(JSON.stringify(HARD.vis)),
   fvis:{},db:JSON.parse(JSON.stringify(HARD.db)),
   refTargetInp:null,savedFormState:null,pwaEvent:null,writing:false
+};
+
+// Pastikan tabel toko terdaftar dengan skema: ['id', 'name', 'sub', 'phone', 'bank', 'footer']
+if(!K.shs.includes('toko'))K.shs.push('toko');
+if(!K.cols.toko)K.cols.toko=['id','name','sub','phone','bank','footer'];
+if(!K.vis.toko)K.vis.toko=['id','name','phone'];
+if(!K.db.toko)K.db.toko=[];
+
+const getStore=()=>{
+  const r=K.db.toko?.[0]||[];
+  const c=K.cols.toko||['id','name','sub','phone','bank','footer'];
+  const gV=k=>{const i=c.indexOf(k);return i>-1&&r[i]!==undefined?r[i]:(HARD.store?.[k]||'');};
+  return {name:gV('name'),sub:gV('sub'),phone:gV('phone'),bank:gV('bank'),footer:gV('footer')};
 };
 
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])),
@@ -239,12 +252,13 @@ const calcContactDebt=kId=>{
 const formatNota=id=>{
   const row=K.db.penjualan?.find(r=>S2(r[0])===S2(id));if(!row)return'';
   const val=k=>cV(row,'penjualan',k),paid=N(val('bayar'))+(K.db.cicil||[]).reduce((a,c)=>a+(S2(cV(c,'cicil','idjual'))===S2(id)?N(cV(c,'cicil','jumlah')):0),0),{raw,disc,items}=calcItems('penjualan',id),gTot=Math.max(0,raw-disc-N(val('diskon'))),diff=paid-gTot,sisa=Math.abs(diff),W_L=32,
+        store=getStore(),
         pad=(s,c=' ')=>{const str=String(s||'').trim();if(str.length>=W_L)return str.slice(0,W_L);const lP=Math.floor((W_L-str.length)/2),rP=W_L-str.length-lP;return c.repeat(lP)+str+c.repeat(rP);},
         lr=(l,r)=>l+' '.repeat(Math.max(1,W_L-l.length-String(r).length))+r,
-        lines=[pad(K.store.name),K.store.sub&&pad(K.store.sub),K.store.phone&&pad(K.store.phone),K.store.bank&&pad(K.store.bank),'='.repeat(W_L),lr(`${val('date')||today()} ${id}`,val('user')||K.u||'admin'),'-'.repeat(W_L)].filter(Boolean);
+        lines=[pad(store.name),store.sub&&pad(store.sub),store.phone&&pad(store.phone),store.bank&&pad(store.bank),'='.repeat(W_L),lr(`${val('date')||today()} ${id}`,val('user')||K.u||'admin'),'-'.repeat(W_L)].filter(Boolean);
   if(!items.length)lines.push('(kosong)');else items.forEach(it=>{lines.push(it.name);if(it.dU>0)lines.push(`${fmtNum(it.p)} -disc ${fmtNum(it.dU)}`);lines.push(lr(`${it.q}x ${fmtNum(it.eff)}`,fmtNum(it.tot)));});
   lines.push('-'.repeat(W_L),lr('Subtotal',fmtNum(raw)));if(disc>0)lines.push(lr('Diskon Item','-'+fmtNum(disc)));if(N(val('diskon'))>0)lines.push(lr('Diskon','-'+fmtNum(val('diskon'))));lines.push(lr('Total',fmtNum(gTot)),lr('Bayar',fmtNum(paid)),lr(diff>=0?'Kembali':'Kurang',fmtNum(sisa)),'-'.repeat(W_L));
-  if(K.store.footer)lines.push(pad(K.store.footer));
+  if(store.footer)lines.push(pad(store.footer));
   const kId=val('idkontak'),kRow=kId&&K.db.kontak?.find(r=>S2(r[0])===S2(kId)),kDisp=kRow?(cV(kRow,'kontak','nama')||kId):kId;
   if(kDisp)lines.push(' '+kDisp);if(val('catatan'))lines.push(' '+val('catatan'));
   const totPiutangKontak=calcContactDebt(kId);if(totPiutangKontak>0)lines.push(lr('Total Piutang','-'+fmtNum(totPiutangKontak)));
@@ -370,7 +384,11 @@ const renderForm=()=>{
     return;
   }
   if(K.v==='bulksheet'){dom.fb.innerHTML=`<textarea rows="10" placeholder="sheet:kolom,kolom">${esc(K.shs.map(s=>`${s}:${(K.cols[s]||[]).join(',')}`).join('\n'))}</textarea>`;addFooter('back','<',K.cur);addFooter('save-bulksheet','save',K.cur);renderNavFooters();return;}
-  if(K.v==='toko'){dom.fb.innerHTML=`<input placeholder="name" value="${esc(K.store.name)}" data-cfg="name"><input placeholder="sub" value="${esc(K.store.sub)}" data-cfg="sub"><input placeholder="phone" value="${esc(K.store.phone)}" data-cfg="phone"><input placeholder="bank" value="${esc(K.store.bank)}" data-cfg="bank"><textarea placeholder="footer" data-cfg="footer">${esc(K.store.footer)}</textarea>`;addFooter('back','<',K.cur);addFooter('save-store','save',K.cur);renderNavFooters();return;}
+  if(K.v==='toko'){
+    const store=getStore();
+    dom.fb.innerHTML=`<input placeholder="name" value="${esc(store.name)}" data-cfg="name"><input placeholder="sub" value="${esc(store.sub)}" data-cfg="sub"><input placeholder="phone" value="${esc(store.phone)}" data-cfg="phone"><input placeholder="bank" value="${esc(store.bank)}" data-cfg="bank"><textarea placeholder="footer" data-cfg="footer">${esc(store.footer)}</textarea>`;
+    addFooter('back','<',K.cur);addFooter('save-store','save',K.cur);renderNavFooters();return;
+  }
   if(K.v==='schema'){dom.fb.innerHTML=`<input placeholder="cols" value="${esc(cols().join(','))}" data-f="cols"><input placeholder="vis (list)" value="${esc(vis().join(','))}" data-f="vis"><input placeholder="form cols" value="${esc(fvis().join(','))}" data-f="form">`;addFooter('back','<',K.cur);addFooter('save-schema','save',K.cur);renderNavFooters();return;}
   
   const c=cols(),bypassAdd=K.idx===-1&&['produk','kas'].includes(K.cur),formCols=bypassAdd?fvis():fvis().filter(col=>hasAccess(col,K.cur)),row=(K.idx!==null&&K.idx>=0)?(K.db[K.cur][K.idx]||[]):[],isDraft=isTrx()&&S2(cV(row,K.cur,'status'))==='draft';
@@ -448,7 +466,7 @@ const updateFormThumb=inp=>{if(!inp)return;const col=inp.dataset.col||'',val=(in
 
 const persist=()=>{
   try{
-    const payload={cur:K.cur,u:K.u,store:K.store,shs:K.shs,cols:K.cols,vis:K.vis,fvis:K.fvis,parent:K.parent,grid:K.grid,df:K.df};
+    const payload={cur:K.cur,u:K.u,shs:K.shs,cols:K.cols,vis:K.vis,fvis:K.fvis,parent:K.parent,grid:K.grid,df:K.df};
     L.setItem('apex',JSON.stringify(payload));
     idbPut(K.db,'apex_matrix');
   }catch{}
@@ -646,7 +664,23 @@ const actions={
     },'image/png');
   },
   print:()=>W.print(),
-  'save-store':()=>{dom.fb.querySelectorAll('[data-cfg]').forEach(i=>K.store[i.dataset.cfg]=i.value.trim());persist();syn(true);setView('list',null);render();},
+  'save-store':()=>{
+    const c=K.cols.toko||['id','name','sub','phone','bank','footer'];
+    const curRow=K.db.toko?.[0]||new Array(c.length).fill('');
+    const newRow=curRow.slice(0,c.length);
+    while(newRow.length<c.length)newRow.push('');
+    newRow[0]='store_1';
+    dom.fb.querySelectorAll('[data-cfg]').forEach(i=>{
+      const ci=c.indexOf(i.dataset.cfg);
+      if(ci>-1)newRow[ci]=i.value.trim();
+    });
+    K.db.toko=[newRow];
+    save(newRow,'toko',K.db.toko.length?1:2);
+    persist();
+    syn(true);
+    setView('list',null);
+    render();
+  },
   'reset-db':async()=>{
     if(K.conf!=='reset-db'){K.conf='reset-db';return msg('reset? klik lagi');}
     K.conf=null;
@@ -817,7 +851,6 @@ W.addEventListener('online',()=>syn(true));
   try{
     const d=JSON.parse(L.getItem('apex')||'null');
     if(d&&typeof d==='object'){
-      if(d.store&&typeof d.store==='object')K.store=Object.assign(K.store,d.store);
       ['shs','cols','vis','fvis'].forEach(k=>{if(d[k])K[k]=d[k];});
       if(d.parent&&typeof d.parent==='object')K.parent=d.parent;
       if(d.cur&&K.shs.includes(d.cur))K.cur=d.cur;
