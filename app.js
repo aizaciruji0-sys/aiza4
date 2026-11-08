@@ -496,8 +496,11 @@ const actions={
   menu:()=>{if(!dom.scBox.hidden)stopScan();if(K.v==='menu'){dom.q.value='';K.v='dash';}else{K.v='menu';dom.q.value='';}render();},
   refresh:async()=>{
     msg('syncing...');
+    // Kirim manifest/ensure_all lengkap membawa seluruh skema tabel & kolom aktif
+    await req({a:'ensure_all', tn:K.shs, cols:K.cols, gasUrl:HARD.gasUrl});
     await syn(true);
     await testConn();
+    render();
   },
   scan:()=>{if(!dom.scBox.hidden)stopScan();else startScan('q');},
   'scan-prod':()=>{if(!dom.scBox.hidden)stopScan();else startScan('form-prod');},
