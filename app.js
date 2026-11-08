@@ -495,10 +495,27 @@ const actions={
   },
   menu:()=>{if(!dom.scBox.hidden)stopScan();if(K.v==='menu'){dom.q.value='';K.v='dash';}else{K.v='menu';dom.q.value='';}render();},
   refresh:async()=>{
-    msg('syncing...');
-    // Kirim manifest/ensure_all lengkap membawa seluruh skema tabel & kolom aktif
+    msg('syncing dataset & tables...');
+    // 1. Pastikan seluruh tabel dan kolom aktif terbuat di D1 dan Google Sheets
     await req({a:'ensure_all', tn:K.shs, cols:K.cols, gasUrl:HARD.gasUrl});
+    
+    // 2. Dorong seluruh antrean mutasi & snapshot dataset lokal terkini ke D1 dan GAS
+    const muts = await ga('mut');
+    await req({
+      a: 'push',
+      m: typeof pack === 'function' ? pack(muts) : muts,
+      tn: K.shs,
+      db: K.db,
+      cols: K.cols,
+      shs: K.shs,
+      gasUrl: HARD.gasUrl
+    });
+    if (muts.length) await rm('mut', muts.map(x => x.i));
+
+    // 3. Tarik seluruh dataset segar (Force Pull)
     await syn(true);
+    
+    // 4. Verifikasi status koneksi
     await testConn();
     render();
   },
