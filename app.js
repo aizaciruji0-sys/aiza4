@@ -1,9 +1,9 @@
 'use strict';
 /* ============================================================
-   APEX KISS ABSOLUTE CORE ENGINE — ULTRA STREAMLINED (SLIM)
+   APEX KISS ABSOLUTE CORE ENGINE — ULTRA STREAMLINED + CMS/TSV/SCAN
    ============================================================ */
 const W=window,L=localStorage;
-let db=null,syncing=false,syncDebounce=null;
+let db=null,syncing=false,syncDebounce=null,scanStream=null,scanTimer=null;
 const ch=(typeof BroadcastChannel!=='undefined')?new BroadcastChannel('sync'):{postMessage:()=>{},onmessage:null};
 ch.onmessage=e=>{if(e.data==='synced')render();else if(e.data==='kick'&&!syncing)syn();};
 
@@ -56,13 +56,11 @@ async function syn(force=false){
     const ver=JSON.parse(L.vs||'[]'),muts=await ga('mut');
     let m=null;
 
-    // 1. PUSH DELTA MUTATIONS
     if(muts.length){
       const pushRes=await req({a:'push',m:muts,tn:tables,db:K.db,cols:K.cols,shs:K.shs,gasUrl:HARD.gasUrl});
       if(pushRes?.ok){await rm('mut',muts.map(x=>x.i));m=pushRes.manifest||pushRes.data?.manifest;isSuccess=true;}
     }
 
-    // 2. MANIFEST VERIFIKASI (AUTO SKEMA DINAMIS)
     if(!m)m=(await req({a:'manifest',tn:tables,cols:K.cols}))?.data||(await req({a:'manifest',tn:tables,cols:K.cols}));
     if(m?.shs&&Array.isArray(m.shs)&&m.shs.length){
       m.shs.forEach(s=>{if(!K.shs.includes(s))K.shs.push(s);});
@@ -70,7 +68,6 @@ async function syn(force=false){
     if(m?.cols&&typeof m.cols==='object')Object.assign(K.cols,m.cols);
     if(m?.vis&&typeof m.vis==='object')Object.assign(K.vis,m.vis);
 
-    // 3. PULL BATCH
     if(m?.v){
       isSuccess=true;
       const toPull=tables.map((_,i)=>({t:i,v:force?'':(ver[i]||'')})).filter((_,i)=>force||(m.v[i]&&m.v[i]!==ver[i]));
@@ -108,6 +105,12 @@ const putRows=async(idx,rows,cNames)=>{
   persist();return true;
 };
 
+const dl=(content,fileName,mimeType='text/plain;charset=utf-8')=>{
+  const blob=new Blob([content],{type:mimeType}),u=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=u;a.download=fileName;document.body.appendChild(a);a.click();
+  setTimeout(()=>{a.remove();URL.revokeObjectURL(u);},400);
+};
+
 const K={
   u:L.u||'',cur:'penjualan',v:'dash',hist:[],idx:null,page:1,sort:0,dir:1,grid:false,
   conf:null,prefill:null,parent:null,receiptRaw:'',prodIdx:null,readyOnly:false,
@@ -118,11 +121,12 @@ const K={
 };
 
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])),
-      isSafeUrl=u=>{const s=String(u||'').trim();return /^https?:\/\//i.test(s)||/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(s)},
+      isSafeUrl=u=>{const s=String(u||'').trim();return /^https?:\/\//i.test(s)||/^data:(image|application|text)\/[a-zA-Z0-9.\-_+]+;base64,/i.test(s)},
       dom={
         h:document.getElementById('h'),q:document.getElementById('q'),msg:document.getElementById('msg'),
         main:document.getElementById('main'),tools:document.getElementById('tools'),
-        fCam:document.getElementById('f-cam'),fImg:document.getElementById('f-img'),fDoc:document.getElementById('f-doc'),
+        scanBox:document.getElementById('scan-box'),scanVid:document.getElementById('scan-vid'),
+        fCam:document.getElementById('f-cam'),fImg:document.getElementById('f-img'),fDoc:document.getElementById('f-doc'),fImp:document.getElementById('f-imp'),
         sh:document.getElementById('sh-sel'),st:document.getElementById('st-sel'),act:document.getElementById('act-sel'),
         fb:document.getElementById('box-form'),db:document.getElementById('box-dash'),ls:document.getElementById('list'),
         ft:document.getElementById('ft'),tape:document.getElementById('tape'),bn:document.getElementById('box-nota')
@@ -142,7 +146,7 @@ const TRXM={penjualan:{ch:'produk_jual',fk:'idpenjualan',p:'hargajual'},pembelia
       parentOf=s=>s==='produk_jual'?'penjualan':(s==='produk_beli'?'pembelian':null),
       fkCol=s=>s==='produk_jual'?'idpenjualan':(s==='produk_beli'?'idpembelian':(s==='cicil'?'idjual':null)),
       NO_ADD=['penjualan','pembelian','produk_jual','produk_beli','cicil','ecer'],
-      EXEMPT=['back','menu','q','dir','grid','closemsg','more','reset-db','add','df-today','df-clear','login','reg','bypass','pwa-install','v-toko','v-dash','v-kas','v-shop','logout','refresh'];
+      EXEMPT=['back','menu','q','dir','grid','closemsg','more','reset-db','add','df-today','df-clear','login','reg','bypass','pwa-install','v-toko','v-dash','v-kas','v-shop','logout','refresh','scan','stop-scan'];
 
 const setView=(v,idx=null)=>{
   if(dom.q&&dom.q.value.trim()!==''){dom.q.value='';K.page=1;}
@@ -189,6 +193,43 @@ const syncStockDelta=(sh,o,n)=>{
 };
 const msg=t=>{dom.msg.innerHTML='';dom.msg.hidden=!t;if(t)dom.msg.textContent=t;};
 
+/* BARCODE SCANNER (CAMERA) */
+const stopScan=()=>{
+  if(scanTimer){clearInterval(scanTimer);scanTimer=null;}
+  if(scanStream){
+    scanStream.getTracks().forEach(t=>t.stop());
+    scanStream=null;
+  }
+  dom.scanBox.hidden=true;
+};
+
+const startScan=()=>{
+  if(!('BarcodeDetector' in W)){
+    msg('Browser tidak mendukung BarcodeDetector');
+    return;
+  }
+  const detector=new BarcodeDetector({formats:['qr_code','ean_13','ean_8','code_128','code_39','upc_a']});
+  navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}}).then(stream=>{
+    scanStream=stream;
+    dom.scanVid.srcObject=stream;
+    dom.scanVid.play();
+    dom.scanBox.hidden=false;
+    scanTimer=setInterval(async()=>{
+      try{
+        const codes=await detector.detect(dom.scanVid);
+        if(codes&&codes.length>0){
+          const val=codes[0].rawValue;
+          stopScan();
+          dom.q.value=val;
+          K.page=1;
+          render();
+          msg(`Scan: ${val}`);
+        }
+      }catch(_){}
+    },250);
+  }).catch(()=>{msg('Kamera tidak dapat diakses');});
+};
+
 const calcItems=(t,id)=>{
   const ch=childOf(t);if(!ch)return{raw:0,disc:0,cogs:0,pot:0,items:[]};
   return(K.db[ch]||[]).reduce((a,r)=>{
@@ -199,6 +240,7 @@ const calcItems=(t,id)=>{
     return a;
   },{raw:0,disc:0,cogs:0,pot:0,items:[]});
 };
+
 const calcContactDebt=kId=>{
   if(!kId)return 0;const cMap={};
   (K.db.cicil||[]).forEach(c=>{const cid=S2(cV(c,'cicil','idjual'));cMap[cid]=(cMap[cid]||0)+N(cV(c,'cicil','jumlah'));});
@@ -208,6 +250,7 @@ const calcContactDebt=kId=>{
     return sum+Math.max(0,net-paid);
   },0);
 };
+
 const formatNota=id=>{
   const row=K.db.penjualan?.find(r=>S2(r[0])===S2(id));if(!row)return'nota kosong';
   const val=k=>cV(row,'penjualan',k),paid=N(val('bayar'))+(K.db.cicil||[]).reduce((a,c)=>a+(S2(cV(c,'cicil','idjual'))===S2(id)?N(cV(c,'cicil','jumlah')):0),0),{raw,disc,items}=calcItems('penjualan',id),gTot=Math.max(0,raw-disc-N(val('diskon'))),diff=paid-gTot,sisa=Math.abs(diff),W_L=32,
@@ -222,6 +265,7 @@ const formatNota=id=>{
   const totPiutangKontak=calcContactDebt(kId);if(totPiutangKontak>0)lines.push(lr('Total Piutang','-'+fmtNum(totPiutangKontak)));
   return lines.join('\n');
 };
+
 const syncTrx=t=>{
   const id=K.parent?.id||(K.idx>=0?K.db[t]?.[K.idx]?.[0]:null);if(!id)return;
   const r=K.db[t]?.find(x=>S2(x[0])===S2(id));if(!r)return;
@@ -231,13 +275,16 @@ const syncTrx=t=>{
   }
   persist();save(r,t,1);
 };
+
 const getOpenTrx=t=>{
   if(!t)return null;const rows=K.db[t]||[],u=S2(K.u||'admin');
   if(K.parent?.type===t){const r=rows.find(x=>S2(x[0])===S2(K.parent.id));if(r&&isUserVisible(r,t)&&['draft','revisi'].includes(S2(cV(r,t,'status'))))return{type:t,id:r[0],row:r,status:cV(r,t,'status')};}
   const r=rows.find(x=>(isAdmin()||S2(cV(x,t,'user'))===u)&&['draft','revisi'].includes(S2(cV(x,t,'status'))));
   return r?{type:t,id:r[0],row:r,status:cV(r,t,'status')||'draft'}:null;
 };
+
 const hasDraftItems=t=>{const ch=childOf(t),op=getOpenTrx(t);return Boolean(ch&&op&&K.db[ch]?.some(r=>S2(cV(r,ch,fkCol(ch)))===S2(op.id)));};
+
 const openProdForm=p=>{
   const isB=K.parent?.type==='pembelian',pType=isB?'pembelian':'penjualan';
   K.parent=getOpenTrx(pType)||{type:pType,id:genId(),open:true};
@@ -245,6 +292,7 @@ const openProdForm=p=>{
   K.prefill={idproduk:p[0],namaproduk:p[3],hargabeli:p[4],hargajual:p[5],qty:'1',diskon:'',catatan:''};
   K.prodIdx=(K.db.produk||[]).indexOf(p);setView('form',-1);render();
 };
+
 const resolveRef=c=>{
   const col=S2(c);
   if(col==='user'||col==='idproduk'||col==='namaproduk'||['produk_jual','produk_beli','ecer'].includes(K.cur))return null;
@@ -257,6 +305,7 @@ const resolveRef=c=>{
   }
   return null;
 };
+
 const queryRows=()=>{
   const rows=K.db[K.cur]||[],q=S2(dom.q.value).split(/\s+/).filter(Boolean),pType=parentOf(K.cur),op=pType?getOpenTrx(pType):null,res=[];
   for(let i=0;i<rows.length;i++){
@@ -288,6 +337,7 @@ const renderChrome=()=>{
   Array.from(dom.act.options).forEach(opt=>{if(opt.value)opt.hidden=!hasAccess(opt.value);});
   const addBtn=dom.h.querySelector('[data-a="add"]');if(addBtn)addBtn.hidden=K.v!=='list'||NO_ADD.includes(K.cur)||!hasAccess('add',K.cur);
 };
+
 const renderMenuFooters=()=>{addFooter('back','<',K.cur);addFooter('refresh','refresh',K.cur);addFooter('v-toko','toko');addFooter('reset-db','reset db');if(K.pwaEvent)addFooter('pwa-install','install pwa');addFooter('logout','logout');};
 const renderNavFooters=()=>{if(K.v!=='dash')addFooter('v-dash','dashboard');if(K.cur!=='kas'||K.v==='dash')addFooter('v-kas','kas');if(K.cur!=='produk'||K.v==='dash')addFooter('v-shop','produk');if(K.cur!=='produk_jual'&&hasDraftItems('penjualan'))addFooter('v-jual','jual');if(K.cur!=='produk_beli'&&hasDraftItems('pembelian'))addFooter('v-beli','beli');};
 
@@ -321,12 +371,27 @@ const renderDash=()=>{
 
 const renderForm=()=>{
   if(!K.u){msg('login');dom.fb.innerHTML='<input placeholder="user" autocomplete="off" data-f="user"><input type="password" placeholder="password" data-f="pass">';addFooter('login','login');addFooter('reg','register');addFooter('bypass','bypass');return;}
-  if(K.cur==='cms'&&K.v==='cms_detail'){msg('cms detail');const r=K.db.cms?.[K.idx]||[],gV=k=>cV(r,'cms',k),fotoSafe=isSafeUrl(gV('foto'))?gV('foto'):'';dom.fb.innerHTML=`<b>${esc(gV('judul')||'(tanpa judul)')}</b><small>${esc(gV('date'))} ${gV('user')?'| '+esc(gV('user')):''} ${gV('kategori')?'| '+esc(gV('kategori')):''} ${gV('status')?'| ['+esc(gV('status'))+']':''}</small><p>${esc(gV('konten'))}</p>${fotoSafe?`<img src="${esc(fotoSafe)}" alt="cms">`:''}`;addFooter('back','<',K.cur);addFooter('edit-cms','edit',K.cur);renderNavFooters();return;}
+  if(K.cur==='cms'&&K.v==='cms_detail'){
+    msg('cms detail');
+    const r=K.db.cms?.[K.idx]||[],gV=k=>cV(r,'cms',k),fotoSafe=isSafeUrl(gV('foto'))?gV('foto'):'',fileVal=gV('file');
+    dom.fb.innerHTML=`<b>${esc(gV('judul')||'(tanpa judul)')}</b>
+    <small>${esc(gV('date'))} ${gV('user')?'| '+esc(gV('user')):''} ${gV('kategori')?'| '+esc(gV('kategori')):''} ${gV('status')?'| ['+esc(gV('status'))+']':''}</small>
+    <p style="white-space:pre-wrap;margin:8px 0;">${esc(gV('konten'))}</p>
+    ${fotoSafe?`<img src="${esc(fotoSafe)}" alt="cms" style="max-width:100%;border-radius:6px;margin:6px 0;"><br>`:''}
+    ${fileVal?`<button data-a="dl-cms-file" class="btn-dl">⬇ Download Lampiran File</button><br>`:''}`;
+    addFooter('back','<',K.cur);
+    if(fileVal)addFooter('dl-cms-file','unduh file',K.cur);
+    addFooter('edit-cms','edit',K.cur);
+    renderNavFooters();
+    return;
+  }
   if(K.v==='bulksheet'){msg('bulksheet');dom.fb.innerHTML=`<textarea rows="10" placeholder="sheet:kolom,kolom">${esc(K.shs.map(s=>`${s}:${(K.cols[s]||[]).join(',')}`).join('\n'))}</textarea>`;addFooter('back','<',K.cur);addFooter('save-bulksheet','save',K.cur);renderNavFooters();return;}
   if(K.v==='toko'){msg('toko');dom.fb.innerHTML=`<input placeholder="name" value="${esc(K.store.name)}" data-cfg="name"><input placeholder="sub" value="${esc(K.store.sub)}" data-cfg="sub"><input placeholder="phone" value="${esc(K.store.phone)}" data-cfg="phone"><input placeholder="bank" value="${esc(K.store.bank)}" data-cfg="bank"><textarea placeholder="footer" data-cfg="footer">${esc(K.store.footer)}</textarea>`;addFooter('back','<',K.cur);addFooter('save-store','save',K.cur);renderNavFooters();return;}
   if(K.v==='schema'){msg(`schema ${K.cur}`);dom.fb.innerHTML=`<input placeholder="cols" value="${esc(cols().join(','))}" data-f="cols"><input placeholder="vis (list)" value="${esc(vis().join(','))}" data-f="vis"><input placeholder="form cols" value="${esc(fvis().join(','))}" data-f="form">`;addFooter('back','<',K.cur);addFooter('save-schema','save',K.cur);renderNavFooters();return;}
+  
   const c=cols(),bypassAdd=K.idx===-1&&['produk','kas'].includes(K.cur),formCols=bypassAdd?fvis():fvis().filter(col=>hasAccess(col,K.cur)),row=(K.idx!==null&&K.idx>=0)?(K.db[K.cur][K.idx]||[]):[],isDraft=isTrx()&&S2(cV(row,K.cur,'status'))==='draft';
   if(isTrx()&&K.idx!==null&&K.idx>=0){const{raw,disc,cogs,pot}=calcItems(K.cur,row[0]),net=Math.max(0,raw-disc-N(cV(row,K.cur,'diskon'))),showProf=hasAccess('profit',K.cur);msg(`total: ${fmtNum(net)}${showProf?` | profit: ${fmtNum(K.cur==='penjualan'?(net-cogs):(pot-net))}`:''}`);}else msg(K.cur);
+  
   formCols.forEach(col=>{
     let val=(K.idx===-1&&c.indexOf(col)===0)?genId():(row[c.indexOf(col)]??'');
     if(K.savedFormState&&K.savedFormState[col]!=null)val=K.savedFormState[col];
@@ -339,6 +404,7 @@ const renderForm=()=>{
     updateFormThumb(dom.fb.querySelector(`[data-col="${CSS.escape(col)}"]`));
   });
   K.savedFormState=null;
+
   if(K.idx===-1&&getRoleRules().includes('wajiblokasi')){
     const locInp=Array.from(dom.fb.querySelectorAll('[data-col]')).find(i=>/lokasi|alamat/i.test(i.dataset.col));
     if(locInp&&!locInp.value&&navigator.geolocation)navigator.geolocation.getCurrentPosition(p=>{if(!locInp.value)locInp.value=`${p.coords.latitude.toFixed(6)},${p.coords.longitude.toFixed(6)}`;},()=>{locInp.value='here()';},{timeout:4000});
@@ -346,7 +412,8 @@ const renderForm=()=>{
   addFooter('back','<',K.cur);addFooter('save-row','save',K.cur);
   if(isTrx())addFooter('trx-pick-kontak','kontak',K.cur);
   formCols.forEach(col=>{const trgSh=resolveRef(col),val=(dom.fb.querySelector(`[data-col="${CSS.escape(col)}"]`)?.value||'').trim();if(trgSh&&trgSh!==K.cur&&K.shs.includes(trgSh)&&(K.db[trgSh]||[]).length>0&&val!=='')addFooter(`ref-${trgSh}`,`ref ${trgSh}`,K.cur,`data-ref-col="${esc(col)}"`);});
-  if(formCols.some(k=>/foto/i.test(k))){addFooter('cam','kamera',K.cur);addFooter('pic','file',K.cur);}
+  if(formCols.some(k=>/foto/i.test(k))){addFooter('cam','kamera',K.cur);addFooter('pic','file foto',K.cur);}
+  if(formCols.some(k=>/file/i.test(k)))addFooter('doc-upload','upload berkas',K.cur);
   if(K.cur==='produk')addFooter('gimg','gimg',K.cur);
   if(formCols.some(k=>/alamat|lokasi/i.test(k))){addFooter('gps','gps',K.cur);if(/(-?\d+\.\d+),\s*(-?\d+\.\d+)/.test(formCols.map(col=>row[c.indexOf(col)]||'').join(' ')))addFooter('navigasi','navigasi',K.cur);}
   if(K.cur==='produk'&&K.idx!==null&&K.idx>=0){addFooter('jual-prod','jual',K.cur);addFooter('beli-prod','beli',K.cur);addFooter('ecer-prod','ecer',K.cur);}
@@ -407,6 +474,8 @@ const render=()=>{
 
 const actions={
   closemsg:()=>{K.conf=null;msg();render();},
+  scan:()=>startScan(),
+  'stop-scan':()=>stopScan(),
   login:()=>{
     const u=S2(dom.fb.querySelector('[data-f="user"]')?.value),p=(dom.fb.querySelector('[data-f="pass"]')?.value||'').trim();
     if(!u)return msg('user required');
@@ -423,6 +492,7 @@ const actions={
   },
   bypass:()=>{if(!K.db.users?.length)K.db.users=[['admin','admin','admin']];K.u=L.u=K.db.users[0]?.[0]||'admin';persist();syn(true);setView('dash',null);msg();render();},
   back:()=>{
+    stopScan();
     if(K.v==='menu'){dom.q.value='';K.v='dash';return render();}
     const inForm=['form','toko','schema','bulksheet','cms_detail','edit'].includes(K.v)||K.idx!==null;
     K.idx=null;K.prefill=null;K.prodIdx=null;K.conf=null;K.refTargetInp=null;K.savedFormState=null;
@@ -458,6 +528,16 @@ const actions={
   },
   'add-cart-item':()=>{K.prefill=null;K.prodIdx=null;setView('form',-1);render();},
   'edit-cms':()=>{setView('form',K.idx);render();},
+  'dl-cms-file':()=>{
+    const r=K.db.cms?.[K.idx]||[],fileData=cV(r,'cms','file'),judul=cV(r,'cms','judul')||'berkas';
+    if(!fileData)return msg('tidak ada berkas');
+    if(/^https?:\/\//i.test(fileData)){W.open(fileData,'_blank');return;}
+    if(/^data:/i.test(fileData)){
+      const a=document.createElement('a');a.href=fileData;a.download=`${judul.replace(/\s+/g,'_')}`;
+      document.body.appendChild(a);a.click();setTimeout(()=>a.remove(),400);return;
+    }
+    dl(fileData,`${judul}.txt`);
+  },
   nav:b=>{K.cur=b.dataset.s;setView('list',null);K.page=1;K.readyOnly=b.dataset.slice==='ready';render();},
   add:()=>{if(!NO_ADD.includes(K.cur)&&hasAccess('add',K.cur)){setView('form',-1);render();}},
   'edit-prod':()=>{if(K.prodIdx!==null){K.cur='produk';const pi=K.prodIdx;K.prodIdx=K.prefill=null;setView('form',pi);render();}},
@@ -629,7 +709,9 @@ const actions={
   dir:()=>{K.dir=-K.dir;K.page=1;render();},
   more:()=>{K.page++;render();},
   logout:()=>{K.u=L.u='';K.hist=[];K.readyOnly=false;persist();render();},
-  cam:()=>dom.fCam.click(),pic:()=>dom.fImg.click(),
+  cam:()=>dom.fCam.click(),
+  pic:()=>dom.fImg.click(),
+  'doc-upload':()=>dom.fDoc.click(),
   gimg:()=>{const q=dom.fb.querySelector('[data-col="namaproduk"]')?.value||dom.fb.querySelector('[data-col="nama"]')?.value||dom.q.value||'';if(q)W.open('https://www.google.com/search?tbm=isch&q='+encodeURIComponent(q),'_blank','noopener,noreferrer');else msg('nama kosong');},
   navigasi:()=>{const loc=(Array.from(dom.fb.querySelectorAll('[data-col]')).find(i=>/alamat|lokasi/i.test(i.dataset.col))?.value||'').trim();if(loc){if(/Android|iPhone|iPad/i.test(navigator.userAgent))W.location.href=`geo:${loc}?q=${encodeURIComponent(loc)}`;else W.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(loc)}`,'_blank','noopener,noreferrer');}else msg('koordinat kosong');},
   gps:()=>{const trg=Array.from(dom.fb.querySelectorAll('[data-col]')).find(i=>/alamat|lokasi/i.test(i.dataset.col));if(!trg||!navigator.geolocation)return msg(!trg?'kolom kosong':'no gps');navigator.geolocation.getCurrentPosition(p=>{trg.value=`${p.coords.latitude.toFixed(6)},${p.coords.longitude.toFixed(6)}`;},()=>msg('gps err'),{enableHighAccuracy:true,timeout:5000});},
@@ -639,6 +721,12 @@ const actions={
     const a=el.value;el.value='';if(!a)return;
     if(a==='edit'){setView(K.v==='edit'?'list':'edit',null);render();}
     else if(a==='bulksheet'||a==='schema'){setView(a,null);render();}
+    else if(a==='tsv'){
+      const c=cols(),rows=K.db[K.cur]||[],tsvContent=[c.join('\t'),...rows.map(r=>r.join('\t'))].join('\n');
+      dl(tsvContent,`${K.cur}_${today()}.tsv`,'text/tab-separated-values;charset=utf-8');
+      msg(`tsv ${K.cur} diunduh`);
+    }
+    else if(a==='imp'){dom.fImp.click();}
     else if(a==='clear'){if(K.conf!=='clear'){K.conf='clear';msg(`clear ${K.cur}?`);return;}K.db[K.cur].forEach(r=>save(r,K.cur,0));K.db[K.cur]=[];K.conf=null;persist();syn(true);render();}
   }
 };
@@ -696,7 +784,41 @@ document.addEventListener('change',e=>{
     const file=e.target.files?.[0];if(!file)return;
     const isDoc=e.target===dom.fDoc,trgCol=isDoc?'file':'foto',tInp=Array.from(dom.fb.querySelectorAll('[data-col]')).find(i=>i.dataset.col===trgCol)||Array.from(dom.fb.querySelectorAll('[data-col]')).find(i=>new RegExp(trgCol,'i').test(i.dataset.col)),jInp=isDoc?Array.from(dom.fb.querySelectorAll('[data-col]')).find(i=>/judul|nama/i.test(i.dataset.col)):null;
     if(jInp&&!jInp.value)jInp.value=file.name;
-    const rd=new FileReader();rd.onload=ev=>{if(tInp){tInp.value=ev.target.result||'';updateFormThumb(tInp);}};rd.onerror=()=>msg('err');rd.readAsDataURL(file);e.target.value='';
+    const rd=new FileReader();
+    rd.onload=ev=>{
+      if(tInp){
+        tInp.value=ev.target.result||'';
+        updateFormThumb(tInp);
+        msg(`${isDoc?'berkas':'foto'} terunggah`);
+      }
+    };
+    rd.onerror=()=>msg('err upload');
+    rd.readAsDataURL(file);
+    e.target.value='';
+  }
+  if(e.target===dom.fImp){
+    const file=e.target.files?.[0];if(!file)return;
+    const rd=new FileReader();
+    rd.onload=ev=>{
+      const text=ev.target.result||'',lines=text.split(/\r?\n/).filter(Boolean);
+      if(!lines.length)return msg('file kosong');
+      const delimiter=lines[0].includes('\t')?'\t':(lines[0].includes(';')?';':','),firstRow=lines[0].split(delimiter).map(s=>s.trim().toLowerCase()),c=cols();
+      let imported=0,startIdx=0;
+      if(firstRow.every(h=>c.includes(h)))startIdx=1;
+      for(let i=startIdx;i<lines.length;i++){
+        const parts=lines[i].split(delimiter).map(s=>s.trim()),row=new Array(c.length).fill('');
+        for(let j=0;j<Math.min(parts.length,c.length);j++)row[j]=parts[j];
+        if(!row[0])row[0]=genId();
+        (K.db[K.cur]=K.db[K.cur]||[]).push(row);
+        save(row,K.cur,2);
+        imported++;
+      }
+      persist();syn(true);render();
+      msg(`${imported} baris berhasil diimpor`);
+    };
+    rd.onerror=()=>msg('gagal baca file');
+    rd.readAsText(file);
+    e.target.value='';
   }
 });
 
@@ -704,7 +826,10 @@ document.addEventListener('keydown',e=>{
   if(e.key==='Enter'&&e.target.tagName!=='TEXTAREA'&&dom.fb.contains(e.target)){
     e.preventDefault();if(K.writing)return;
     if(!K.u)actions.login();else if(['bulksheet','toko','schema'].includes(K.v))actions[`save-${K.v}`]();else actions['save-row']();
-  }else if(e.key==='Escape')actions.back();
+  }else if(e.key==='Escape'){
+    if(!dom.scanBox.hidden)stopScan();
+    else actions.back();
+  }
 });
 
 W.addEventListener('beforeinstallprompt',e=>{e.preventDefault();K.pwaEvent=e;if(K.v==='menu'||K.v==='dash')render();});
