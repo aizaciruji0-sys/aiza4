@@ -1,6 +1,6 @@
 'use strict';
 /* ============================================================
-   APEX KISS ABSOLUTE CORE ENGINE — ULTRA DYNAMIC SCHEMA & RAW RESET
+   APEX KISS ABSOLUTE CORE ENGINE (ULTRA DYNAMIC TABLE & SCHEMA)
    ============================================================ */
 const W=window,L=localStorage;
 let db=null,syncing=false,syncDebounce=null;
@@ -29,55 +29,103 @@ function save(row,targetTable=K.cur,actionType=2){
 
 function initDB(tables=[],onReady){
   const req=indexedDB.open('r',112);
-  req.onupgradeneeded=e=>{const d=e.target.result;tables.forEach(t=>!d.objectStoreNames.contains(t)&&d.createObjectStore(t,{keyPath:'_seq',autoIncrement:true}));if(!d.objectStoreNames.contains('mut'))d.createObjectStore('mut',{keyPath:'i'});};
+  req.onupgradeneeded=e=>{
+    const d=e.target.result;
+    tables.forEach(t=>!d.objectStoreNames.contains(t)&&d.createObjectStore(t,{keyPath:'_seq',autoIncrement:true}));
+    if(!d.objectStoreNames.contains('mut'))d.createObjectStore('mut',{keyPath:'i'});
+  };
   req.onsuccess=e=>{db=e.target.result;onReady?.(db);};
 }
 
 async function req(p={}){
   p.u=p.u||L.u||'';
   if(HARD.d1Url&&['pull_batch','pull','manifest','push','stream'].includes(p.a)){
-    try{const r=await(await fetch(HARD.d1Url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)})).json();if(r?.ok||r?.s==='ok'||r?.status==='ok')return r;}catch{}
+    try{
+      const r=await(await fetch(HARD.d1Url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)})).json();
+      if(r?.ok||r?.s==='ok'||r?.status==='ok')return r;
+    }catch{}
   }
   return new Promise(res=>{
     if(W.google?.script?.run){W.google.script.run.withSuccessHandler(r=>res({ok:r?.ok??r?.s==='ok',...r})).withFailureHandler(e=>res({ok:false,e})).core(p);return;}
-    if(HARD.gasUrl&&/^https?:\/\//i.test(HARD.gasUrl)){fetch(HARD.gasUrl,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(p)}).then(r=>r.json()).then(j=>res({ok:j?.ok??j?.s==='ok',...j})).catch(e=>res({ok:false,e}));return;}
+    if(HARD.gasUrl&&/^https?:\/\//i.test(HARD.gasUrl)){
+      fetch(HARD.gasUrl,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(p)}).then(r=>r.json()).then(j=>res({ok:j?.ok??j?.s==='ok',...j})).catch(e=>res({ok:false,e}));return;
+    }
     res({ok:false,e:'offline'});
   });
 }
 
 function mut(table,data,actionType){save(data,table,actionType);}
 
-// Sinkronisasi Data & Skema Ultra Dinamis dari Cloud
+async function testConn(){
+  msg('cek koneksi...');
+  let d1Ok=false,gasOk=false;
+  if(HARD.d1Url){
+    try{
+      const res=await req({a:'manifest',tn:K.shs,cols:K.cols});
+      if(res&&(res.ok||res.v||res.data?.v))d1Ok=true;
+    }catch{}
+  }
+  if(HARD.gasUrl){
+    try{
+      const r=await fetch(HARD.gasUrl,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({a:'manifest',tn:K.shs,cols:K.cols})});
+      const j=await r.json();
+      if(j&&(j.ok||j.v||j.data?.v))gasOk=true;
+    }catch{}
+  }
+  const statusStr=`D1: ${d1Ok?'OK':'OFFLINE'} | GAS: ${gasOk?'OK':'OFFLINE'}`;
+  msg(statusStr);
+  setTimeout(()=>msg(),3000);
+  return {d1:d1Ok,gas:gasOk};
+}
+
 async function syn(force=false){
   if(!navigator.onLine||(syncing&&!force)||!db)return;
   syncing=true;
   try{
-    const tables=K.shs||HARD.shs;if(force)L.vs='[]';const ver=JSON.parse(L.vs||'[]'),muts=await ga('mut');
+    const tables=K.shs||HARD.shs;
+    if(force)L.vs='[]';
+    const ver=JSON.parse(L.vs||'[]'),muts=await ga('mut');
     let m=null;
+
+    // 1. PUSH DELTA MUTATIONS BESERTA SCHEMA AKTIF
     if(muts.length){
       const pushRes=await req({a:'push',m:typeof pack==='function'?pack(muts):muts,tn:tables,db:K.db,cols:K.cols,shs:K.shs,gasUrl:HARD.gasUrl});
       if(pushRes?.ok){await rm('mut',muts.map(x=>x.i));m=pushRes.manifest||pushRes.data?.manifest;}
     }
-    // 1. Skema & Stream D1
+
+    // 2. STREAM PULL (CLOUDFLARE D1) DENGAN AUTO RESOLVE SKEMA DINAMIS
     if(HARD.d1Url&&/^https?:\/\//i.test(HARD.d1Url)){
-      try{let sc=false;await pullStream(HARD.d1Url+'?stream=1',o=>{
-        if(o?.t){
-          if(Array.isArray(o.cols)&&o.cols.length){K.cols[o.t]=o.cols.slice();if(!K.vis[o.t])K.vis[o.t]=o.cols.slice(0,4);}
-          if(Array.isArray(o.r)){K.db[o.t]=o.r;sc=true;}
-        }
-      });if(sc){persist();ch.postMessage('synced');render();return;}}catch{}
+      try{
+        let streamChanged=false;
+        await pullStream(HARD.d1Url+'?stream=1',o=>{
+          if(o?.t){
+            if(!K.shs.includes(o.t)){K.shs.push(o.t);streamChanged=true;}
+            if(Array.isArray(o.cols)&&o.cols.length){K.cols[o.t]=o.cols.slice();if(!K.vis[o.t])K.vis[o.t]=o.cols.slice(0,4);streamChanged=true;}
+            if(Array.isArray(o.r)){K.db[o.t]=o.r;streamChanged=true;}
+          }
+        });
+        if(streamChanged){persist();ch.postMessage('synced');render();return;}
+      }catch{}
     }
-    // 2. Manifest Batch Verification
-    if(!m)m=(await req({a:'manifest'}))?.data||(await req({a:'manifest'}));
-    if(m?.shs&&Array.isArray(m.shs)&&m.shs.length)K.shs=m.shs.slice();
+
+    // 3. MANIFEST CEK DENGAN SINKRONISASI DAFTAR TABEL & KOLOM
+    if(!m)m=(await req({a:'manifest',tn:tables,cols:K.cols}))?.data||(await req({a:'manifest',tn:tables,cols:K.cols}));
+    if(m?.shs&&Array.isArray(m.shs)&&m.shs.length){
+      m.shs.forEach(s=>{if(!K.shs.includes(s))K.shs.push(s);});
+    }
     if(m?.cols&&typeof m.cols==='object')Object.assign(K.cols,m.cols);
     if(m?.vis&&typeof m.vis==='object')Object.assign(K.vis,m.vis);
 
     if(m?.v){
       const toPull=tables.map((_,i)=>({t:i,v:force?'':(ver[i]||'')})).filter((_,i)=>force||(m.v[i]&&m.v[i]!==ver[i]));
       if(toPull.length){
-        const b=await req({a:'pull_batch',reqs:toPull,tn:tables});
-        (b?.data?.results||b?.results||[]).forEach(async r=>{if(r?.v){ver[r.t]=r.v;await putRows(r.t,r.r,r.cols);}});
+        const b=await req({a:'pull_batch',reqs:toPull,tn:tables,cols:K.cols});
+        (b?.data?.results||b?.results||[]).forEach(async r=>{
+          if(r?.v){
+            ver[r.t]=r.v;
+            await putRows(r.t,r.r,r.cols);
+          }
+        });
         L.vs=JSON.stringify(ver);ch.postMessage('synced');render();
       }
     }else if(m?.db){
@@ -85,49 +133,49 @@ async function syn(force=false){
     }
   }finally{syncing=false;}
 }
-Object.assign(W,{pullStream,idbPut,save,initDB,req,mut,syn});
+Object.assign(W,{pullStream,idbPut,idbClearStore,save,initDB,req,mut,syn,testConn});
 
-const TI=s=>K.shs.indexOf(s),R=(t,d)=>Array.isArray(d)?d:Object.values(d);
+const T=HARD.shs,TI=s=>K.shs.indexOf(s),R=(t,d)=>Array.isArray(d)?d:Object.values(d);
 const ga=table=>new Promise(res=>{if(!db)return res([]);try{const rq=db.transaction(table,'readonly').objectStore(table).getAll();rq.onsuccess=()=>res(rq.result||[]);rq.onerror=()=>res([]);}catch{res([]);}});
 const rm=(table,keys)=>new Promise(res=>{if(!db||!keys?.length)return res();try{const tx=db.transaction(table,'readwrite'),st=tx.objectStore(table);keys.forEach(k=>st.delete(k));tx.oncomplete=()=>res();tx.onerror=()=>res();}catch{res();}});
+
 const putRows=async(idx,rows,cNames)=>{
   const tn=K.shs[idx];if(!tn)return false;
   K.db[tn]=rows.slice();
-  if(Array.isArray(cNames)&&cNames.length){
-    K.cols[tn]=cNames.slice();
-    if(!K.vis[tn])K.vis[tn]=cNames.slice(0,4);
-  }
+  if(Array.isArray(cNames)&&cNames.length)K.cols[tn]=cNames.slice();
   persist();return true;
 };
 
 const K={
-  u:L.u||'',cur:'penjualan',v:'dash',hist:[],idx:null,page:1,sort:0,dir:1,grid:false,conf:null,prefill:null,parent:null,receiptRaw:'',prodIdx:null,readyOnly:false,
-  df:{u:'',from:'',to:'',kat:''},store:{...HARD.store},shs:[...HARD.shs],
-  cols:JSON.parse(JSON.stringify(HARD.cols)),vis:JSON.parse(JSON.stringify(HARD.vis)),fvis:{},db:JSON.parse(JSON.stringify(HARD.db)),
-  scanTarget:'q',scanStream:null,scanActive:false,refTargetInp:null,savedFormState:null,pwaEvent:null,writing:false
+  u:L.u||'',cur:'penjualan',v:'dash',hist:[],idx:null,page:1,sort:0,dir:1,grid:false,
+  conf:null,prefill:null,parent:null,receiptRaw:'',prodIdx:null,readyOnly:false,
+  df:{u:'',from:'',to:'',kat:''},store:{...HARD.store},
+  shs:[...HARD.shs],cols:JSON.parse(JSON.stringify(HARD.cols)),vis:JSON.parse(JSON.stringify(HARD.vis)),
+  fvis:{},db:JSON.parse(JSON.stringify(HARD.db)),scanTarget:'q',scanStream:null,scanActive:false,
+  refTargetInp:null,savedFormState:null,pwaEvent:null,writing:false
 };
 
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])),
-  qEsc=s=>W.CSS&&CSS.escape?CSS.escape(s):String(s).replace(/["'\\]/g,'\\$&'),
-  isSafeUrl=u=>{const s=String(u||'').trim();return /^https?:\/\//i.test(s)||/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(s)},
-  $=id=>document.getElementById(id),
-  dom={h:$('h'),q:$('q'),msg:$('msg'),main:$('main'),tools:$('tools'),f:$('f'),fCam:$('f-cam'),fImg:$('f-img'),fDoc:$('f-doc'),sh:$('sh-sel'),st:$('st-sel'),act:$('act-sel'),fb:$('box-form'),db:$('box-dash'),ls:$('list'),ft:$('ft'),tape:$('tape'),bn:$('box-nota'),scBox:$('scan-box'),scVid:$('scan-vid'),ib:$('img-box'),it:$('img-trg')};
+      qEsc=s=>W.CSS&&CSS.escape?CSS.escape(s):String(s).replace(/["'\\]/g,'\\$&'),
+      isSafeUrl=u=>{const s=String(u||'').trim();return /^https?:\/\//i.test(s)||/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(s)},
+      $=id=>document.getElementById(id),
+      dom={h:$('h'),q:$('q'),msg:$('msg'),main:$('main'),tools:$('tools'),f:$('f'),fCam:$('f-cam'),fImg:$('f-img'),fDoc:$('f-doc'),sh:$('sh-sel'),st:$('st-sel'),act:$('act-sel'),fb:$('box-form'),db:$('box-dash'),ls:$('list'),ft:$('ft'),tape:$('tape'),bn:$('box-nota'),scBox:$('scan-box'),scVid:$('scan-vid'),ib:$('img-box'),it:$('img-trg')};
 
 const S2=s=>String(s||'').trim().toLowerCase(),
-  N=v=>{if(v==null)return 0;let s=String(v).trim().replace(/\s+/g,'');if(s.includes(',')&&s.includes('.'))s=s.lastIndexOf(',')>s.lastIndexOf('.')?s.replace(/\./g,'').replace(',','.'):s.replace(/,/g,'');else if(s.includes(','))s=s.replace(',','.');const n=parseFloat(s);return(!isFinite(n)||n<0)?0:n},
-  cols=(s=K.cur)=>K.cols[s]||['id','col1'],
-  cI=(s,k)=>cols(s).indexOf(k),
-  cV=(r,s,k)=>{const i=cI(s,k);return(r&&i>-1&&r[i]!==undefined)?String(r[i]):''},
-  vis=(s=K.cur)=>(K.vis[s]||cols(s)).filter(c=>cols(s).includes(c)),
-  fvis=(s=K.cur)=>((K.fvis?.[s]?.length)?K.fvis[s]:cols(s)).filter(c=>cols(s).includes(c));
+      N=v=>{if(v==null)return 0;let s=String(v).trim().replace(/\s+/g,'');if(s.includes(',')&&s.includes('.'))s=s.lastIndexOf(',')>s.lastIndexOf('.')?s.replace(/\./g,'').replace(',','.'):s.replace(/,/g,'');else if(s.includes(','))s=s.replace(',','.');const n=parseFloat(s);return(!isFinite(n)||n<0)?0:n},
+      cols=(s=K.cur)=>K.cols[s]||['id','col1'],
+      cI=(s,k)=>cols(s).indexOf(k),
+      cV=(r,s,k)=>{const i=cI(s,k);return(r&&i>-1&&r[i]!==undefined)?String(r[i]):''},
+      vis=(s=K.cur)=>(K.vis[s]||cols(s)).filter(c=>cols(s).includes(c)),
+      fvis=(s=K.cur)=>((K.fvis?.[s]?.length)?K.fvis[s]:cols(s)).filter(c=>cols(s).includes(c));
 
 const TRXM={penjualan:{ch:'produk_jual',fk:'idpenjualan',p:'hargajual'},pembelian:{ch:'produk_beli',fk:'idpembelian',p:'hargabeli'}},
-  isTrx=(s=K.cur)=>Boolean(TRXM[s]),
-  childOf=s=>TRXM[s]?.ch||null,
-  parentOf=s=>s==='produk_jual'?'penjualan':(s==='produk_beli'?'pembelian':null),
-  fkCol=s=>s==='produk_jual'?'idpenjualan':(s==='produk_beli'?'idpembelian':(s==='cicil'?'idjual':null)),
-  NO_ADD=['penjualan','pembelian','produk_jual','produk_beli','cicil','ecer'],
-  EXEMPT=['back','menu','q','scan','dir','grid','closemsg','img-cls','scan-stop','more','reset-db','add','df-today','df-clear','login','reg','bypass','pwa-install','v-toko','v-dash','v-kas','v-shop','logout','refresh'];
+      isTrx=(s=K.cur)=>Boolean(TRXM[s]),
+      childOf=s=>TRXM[s]?.ch||null,
+      parentOf=s=>s==='produk_jual'?'penjualan':(s==='produk_beli'?'pembelian':null),
+      fkCol=s=>s==='produk_jual'?'idpenjualan':(s==='produk_beli'?'idpembelian':(s==='cicil'?'idjual':null)),
+      NO_ADD=['penjualan','pembelian','produk_jual','produk_beli','cicil','ecer'],
+      EXEMPT=['back','menu','q','scan','dir','grid','closemsg','img-cls','scan-stop','more','reset-db','add','df-today','df-clear','login','reg','bypass','pwa-install','v-toko','v-dash','v-kas','v-shop','logout','refresh'];
 
 const setView=(v,idx=null)=>{
   if(dom.q&&dom.q.value.trim()!==''){dom.q.value='';K.page=1;}
@@ -137,21 +185,29 @@ const setView=(v,idx=null)=>{
   }
   K.v=v;K.idx=idx;K.conf=null;
 };
-
 const getRole=()=>{if(!K.u)return'user';const uR=K.db.users?.find(r=>S2(r[0])===S2(K.u));return S2(uR?.[1]||'user');};
 const isAdmin=()=>getRole()==='admin';
 const isUserVisible=(r,sh=K.cur)=>{
   if(isAdmin()||sh==='produk')return true;
-  const uCol=cI(sh,'user');if(uCol!==-1)return S2(r[uCol])===S2(K.u);
-  const pSh=parentOf(sh);if(pSh){const fk=cV(r,sh,fkCol(sh)),pRow=K.db[pSh]?.find(p=>S2(p[0])===S2(fk));return pRow?isUserVisible(pRow,pSh):true;}
+  const uCol=cI(sh,'user');
+  if(uCol!==-1)return S2(r[uCol])===S2(K.u);
+  const pSh=parentOf(sh);
+  if(pSh){
+    const fk=cV(r,sh,fkCol(sh)),pRow=K.db[pSh]?.find(p=>S2(p[0])===S2(fk));
+    return pRow?isUserVisible(pRow,pSh):true;
+  }
   return true;
 };
 const getRoleRules=()=>{if(!K.u)return[];const role=getRole(),v=(K.db.roles?.find(r=>S2(r[0])===role)?.[2]||'').toLowerCase();return v.split(',').map(S2).filter(Boolean);};
 const hasAccess=(k,s=K.cur)=>{
-  const rawK=S2(k);if(EXEMPT.includes(rawK)||rawK.startsWith('df-')||rawK.startsWith('ref-'))return true;
-  if(!K.u)return false;if(isAdmin())return true;
-  const role=getRole(),h=(K.db.roles?.find(r=>S2(r[0])===role)?.[1]||'').toLowerCase();if(!h)return true;
-  const list=h.split(',').map(S2);return!(list.includes('all')||list.includes('*')||list.includes(rawK)||(s&&list.includes(`${S2(s)}.${rawK}`))||(s&&list.includes(S2(s))));
+  const rawK=S2(k);
+  if(EXEMPT.includes(rawK)||rawK.startsWith('df-')||rawK.startsWith('ref-'))return true;
+  if(!K.u)return false;
+  if(isAdmin())return true;
+  const role=getRole(),h=(K.db.roles?.find(r=>S2(r[0])===role)?.[1]||'').toLowerCase();
+  if(!h)return true;
+  const list=h.split(',').map(S2);
+  return!(list.includes('all')||list.includes('*')||list.includes(rawK)||(s&&list.includes(`${S2(s)}.${rawK}`))||(s&&list.includes(S2(s))));
 };
 const addFooter=(a,txt,targetSheet=K.cur,extraAttr='')=>{if(hasAccess(a,targetSheet))dom.ft.insertAdjacentHTML('beforeend',`<button data-a="${esc(a)}" ${extraAttr}>${esc(txt)}</button> `);};
 const genId=()=>{const d=new Date();return String(d.getHours()).padStart(2,'0')+String(d.getMinutes()).padStart(2,'0')+Math.random().toString(36).slice(2,5).padEnd(3,'0');};
@@ -159,11 +215,14 @@ const fmtNum=n=>N(n).toLocaleString('id-ID'),today=()=>new Date().toISOString().
 const syncStockDelta=(sh,o,n)=>{
   if(!['produk_jual','produk_beli','ecer'].includes(sh))return;
   const m=sh==='produk_beli'?1:-1,p=r=>r&&{id:cV(r,sh,'idproduk'),q:N(cV(r,sh,'qty'))};
-  [{r:o,s:-m},{r:n,s:m}].forEach(({r,s})=>{const x=p(r),row=x?.id&&K.db.produk?.find(k=>S2(k[0])===S2(x.id));if(row&&cI('produk','stok')>-1)row[cI('produk','stok')]=String(N(row[cI('produk','stok')])+x.q*s);});
+  [{r:o,s:-m},{r:n,s:m}].forEach(({r,s})=>{
+    const x=p(r),row=x?.id&&K.db.produk?.find(k=>S2(k[0])===S2(x.id));
+    if(row&&cI('produk','stok')>-1)row[cI('produk','stok')]=String(N(row[cI('produk','stok')])+x.q*s);
+  });
 };
 const msg=t=>{dom.msg.innerHTML='';dom.msg.hidden=!t;if(t)dom.msg.textContent=t;},
-  dl=(str,name,mime)=>{const u=URL.createObjectURL(new Blob([str],{type:mime})),a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{a.remove();URL.revokeObjectURL(u);},500);},
-  copyTxt=t=>{const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();};
+      dl=(str,name,mime)=>{const u=URL.createObjectURL(new Blob([str],{type:mime})),a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{a.remove();URL.revokeObjectURL(u);},500);},
+      copyTxt=t=>{const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();};
 
 const calcItems=(t,id)=>{
   const ch=childOf(t);if(!ch)return{raw:0,disc:0,cogs:0,pot:0,items:[]};
@@ -171,10 +230,10 @@ const calcItems=(t,id)=>{
     if(S2(cV(r,ch,fkCol(ch)))!==S2(id))return a;
     const q=N(cV(r,ch,'qty')),p=N(cV(r,ch,t==='penjualan'?'hargajual':'hargabeli')),b=N(cV(r,ch,'hargabeli')),s=N(cV(r,ch,'hargajual')),d=N(cV(r,ch,'diskon')),dLine=d>0?(d<p?d*q:d):0,dU=q>0?dLine/q:0;
     a.raw+=q*p;a.disc+=dLine;a.cogs+=q*b;a.pot+=q*s;
-    a.items.push({name:cV(r,ch,'namaproduk')||'item',id:cV(r,ch,'idproduk'),q,p,b,s,dU,eff:Math.max(0,p-dU),tot:q*p-dLine});return a;
+    a.items.push({name:cV(r,ch,'namaproduk')||'item',id:cV(r,ch,'idproduk'),q,p,b,s,dU,eff:Math.max(0,p-dU),tot:q*p-dLine});
+    return a;
   },{raw:0,disc:0,cogs:0,pot:0,items:[]});
 };
-
 const calcContactDebt=kId=>{
   if(!kId)return 0;const cMap={};
   (K.db.cicil||[]).forEach(c=>{const cid=S2(cV(c,'cicil','idjual'));cMap[cid]=(cMap[cid]||0)+N(cV(c,'cicil','jumlah'));});
@@ -184,41 +243,46 @@ const calcContactDebt=kId=>{
     return sum+Math.max(0,net-paid);
   },0);
 };
-
 const formatNota=id=>{
   const row=K.db.penjualan?.find(r=>S2(r[0])===S2(id));if(!row)return'nota kosong';
-  const val=k=>cV(row,'penjualan',k),paid=N(val('bayar'))+(K.db.cicil||[]).reduce((a,c)=>a+(S2(cV(c,'cicil','idjual'))===S2(id)?N(cV(c,'cicil','jumlah')):0),0),{raw,disc,items}=calcItems('penjualan',id),gTot=Math.max(0,raw-disc-N(val('diskon'))),diff=paid-gTot,sisa=Math.abs(diff),W_L=32,pad=(s,c=' ')=>{const str=String(s||'').trim();if(str.length>=W_L)return str.slice(0,W_L);const lP=Math.floor((W_L-str.length)/2),rP=W_L-str.length-lP;return c.repeat(lP)+str+c.repeat(rP);},lr=(l,r)=>l+' '.repeat(Math.max(1,W_L-l.length-String(r).length))+r,lines=[pad(K.store.name),K.store.sub&&pad(K.store.sub),K.store.phone&&pad(K.store.phone),K.store.bank&&pad(K.store.bank),'='.repeat(W_L),lr(`${val('date')||today()} ${id}`,val('user')||K.u||'admin'),'-'.repeat(W_L)].filter(Boolean);
+  const val=k=>cV(row,'penjualan',k),paid=N(val('bayar'))+(K.db.cicil||[]).reduce((a,c)=>a+(S2(cV(c,'cicil','idjual'))===S2(id)?N(cV(c,'cicil','jumlah')):0),0),{raw,disc,items}=calcItems('penjualan',id),gTot=Math.max(0,raw-disc-N(val('diskon'))),diff=paid-gTot,sisa=Math.abs(diff),W_L=32,
+        pad=(s,c=' ')=>{const str=String(s||'').trim();if(str.length>=W_L)return str.slice(0,W_L);const lP=Math.floor((W_L-str.length)/2),rP=W_L-str.length-lP;return c.repeat(lP)+str+c.repeat(rP);},
+        lr=(l,r)=>l+' '.repeat(Math.max(1,W_L-l.length-String(r).length))+r,
+        lines=[pad(K.store.name),K.store.sub&&pad(K.store.sub),K.store.phone&&pad(K.store.phone),K.store.bank&&pad(K.store.bank),'='.repeat(W_L),lr(`${val('date')||today()} ${id}`,val('user')||K.u||'admin'),'-'.repeat(W_L)].filter(Boolean);
   if(!items.length)lines.push('(kosong)');else items.forEach(it=>{lines.push(it.name);if(it.dU>0)lines.push(`${fmtNum(it.p)} -disc ${fmtNum(it.dU)}`);lines.push(lr(`${it.q}x ${fmtNum(it.eff)}`,fmtNum(it.tot)));});
   lines.push('-'.repeat(W_L),lr('Subtotal',fmtNum(raw)));if(disc>0)lines.push(lr('Diskon Item','-'+fmtNum(disc)));if(N(val('diskon'))>0)lines.push(lr('Diskon','-'+fmtNum(val('diskon'))));lines.push(lr('Total',fmtNum(gTot)),lr('Bayar',fmtNum(paid)),lr(diff>=0?'Kembali':'Kurang',fmtNum(sisa)),'-'.repeat(W_L));
   if(K.store.footer)lines.push(pad(K.store.footer));
   const kId=val('idkontak'),kRow=kId&&K.db.kontak?.find(r=>S2(r[0])===S2(kId)),kDisp=kRow?(cV(kRow,'kontak','nama')||kId):kId;
   if(kDisp)lines.push(' '+kDisp);if(val('catatan'))lines.push(' '+val('catatan'));
-  const totPiutangKontak=calcContactDebt(kId);if(totPiutangKontak>0)lines.push(lr('Total Piutang','-'+fmtNum(totPiutangKontak)));return lines.join('\n');
+  const totPiutangKontak=calcContactDebt(kId);if(totPiutangKontak>0)lines.push(lr('Total Piutang','-'+fmtNum(totPiutangKontak)));
+  return lines.join('\n');
 };
-
 const syncTrx=t=>{
   const id=K.parent?.id||(K.idx>=0?K.db[t]?.[K.idx]?.[0]:null);if(!id)return;
   const r=K.db[t]?.find(x=>S2(x[0])===S2(id));if(!r)return;
   const{raw,disc}=calcItems(t,id),net=Math.max(0,raw-disc-N(cV(r,t,'diskon'))),paid=N(cV(r,t,'bayar'))+(t==='penjualan'?(K.db.cicil||[]).reduce((a,c)=>a+(S2(cV(c,'cicil','idjual'))===S2(id)?N(cV(c,'cicil','jumlah')):0),0):0),kId=cV(r,t,'idkontak'),sI=cI(t,'status');
-  if(sI>-1&&r[sI]!=='revisi'){if(net<=0)r[sI]='draft';else if(paid>=net)r[sI]='lunas';else if(kId)r[sI]='piutang';else r[sI]='draft';}
+  if(sI>-1&&r[sI]!=='revisi'){
+    if(net<=0)r[sI]='draft';else if(paid>=net)r[sI]='lunas';else if(kId)r[sI]='piutang';else r[sI]='draft';
+  }
   persist();save(r,t,1);
 };
-
 const getOpenTrx=t=>{
   if(!t)return null;const rows=K.db[t]||[],u=S2(K.u||'admin');
   if(K.parent?.type===t){const r=rows.find(x=>S2(x[0])===S2(K.parent.id));if(r&&isUserVisible(r,t)&&['draft','revisi'].includes(S2(cV(r,t,'status'))))return{type:t,id:r[0],row:r,status:cV(r,t,'status')};}
-  const r=rows.find(x=>(isAdmin()||S2(cV(x,t,'user'))===u)&&['draft','revisi'].includes(S2(cV(x,t,'status'))));return r?{type:t,id:r[0],row:r,status:cV(r,t,'status')||'draft'}:null;
+  const r=rows.find(x=>(isAdmin()||S2(cV(x,t,'user'))===u)&&['draft','revisi'].includes(S2(cV(x,t,'status'))));
+  return r?{type:t,id:r[0],row:r,status:cV(r,t,'status')||'draft'}:null;
 };
 const hasDraftItems=t=>{const ch=childOf(t),op=getOpenTrx(t);return Boolean(ch&&op&&K.db[ch]?.some(r=>S2(cV(r,ch,fkCol(ch)))===S2(op.id)));};
 const openProdForm=p=>{
   const isB=K.parent?.type==='pembelian',pType=isB?'pembelian':'penjualan';
-  K.parent=getOpenTrx(pType)||{type:pType,id:genId(),open:true};K.cur=isB?'produk_beli':'produk_jual';
+  K.parent=getOpenTrx(pType)||{type:pType,id:genId(),open:true};
+  K.cur=isB?'produk_beli':'produk_jual';
   K.prefill={idproduk:p[0],namaproduk:p[3],hargabeli:p[4],hargajual:p[5],qty:'1',diskon:'',catatan:''};
   K.prodIdx=(K.db.produk||[]).indexOf(p);setView('form',-1);render();
 };
-
 const resolveRef=c=>{
-  const col=S2(c);if(col==='user'||col==='idproduk'||col==='namaproduk'||['produk_jual','produk_beli','ecer'].includes(K.cur))return null;
+  const col=S2(c);
+  if(col==='user'||col==='idproduk'||col==='namaproduk'||['produk_jual','produk_beli','ecer'].includes(K.cur))return null;
   const direct=K.shs.find(s=>S2(s)===col);if(direct)return direct;
   if(col.startsWith('id')){
     const naked=col.slice(2),exact=K.shs.find(s=>S2(s)===naked);if(exact)return exact;
@@ -228,7 +292,6 @@ const resolveRef=c=>{
   }
   return null;
 };
-
 const queryRows=()=>{
   const rows=K.db[K.cur]||[],q=S2(dom.q.value).split(/\s+/).filter(Boolean),pType=parentOf(K.cur),op=pType?getOpenTrx(pType):null,res=[];
   for(let i=0;i<rows.length;i++){
@@ -237,8 +300,9 @@ const queryRows=()=>{
     if(pType&&op&&S2(cV(r,K.cur,fkCol(K.cur)))!==S2(op.id))continue;
     if(!q.length||q.every(w=>r.join(' ').toLowerCase().includes(w)))res.push(i);
   }
-  if(K.sort>0&&K.sort<=cols().length){const ci=K.sort-1;res.sort((a,b)=>String(rows[a]?.[ci]||'').localeCompare(String(rows[b]?.[ci]||''),undefined,{numeric:true})*K.dir);}
-  else if(K.dir===-1)res.reverse();
+  if(K.sort>0&&K.sort<=cols().length){
+    const ci=K.sort-1;res.sort((a,b)=>String(rows[a]?.[ci]||'').localeCompare(String(rows[b]?.[ci]||''),undefined,{numeric:true})*K.dir);
+  }else if(K.dir===-1)res.reverse();
   return res;
 };
 
@@ -246,8 +310,12 @@ const renderChrome=()=>{
   const allowed=K.shs.filter(s=>hasAccess(s));
   if(dom.sh.dataset.shs!==allowed.join(',')){dom.sh.innerHTML=allowed.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');dom.sh.dataset.shs=allowed.join(',');}
   if(!allowed.includes(K.cur)&&allowed.length)K.cur=allowed[0];
-  dom.sh.value=K.cur;dom.sh.hidden=!hasAccess('sh-sel');const c=cols();
-  if(dom.st.dataset.cur!==K.cur||dom.st.children.length!==(c.length+1)){dom.st.innerHTML='<option value="0">srt</option>'+c.map((col,i)=>`<option value="${i+1}">${esc(col)}</option>`).join('');dom.st.dataset.cur=K.cur;}
+  dom.sh.value=K.cur;dom.sh.hidden=!hasAccess('sh-sel');
+  const c=cols();
+  if(dom.st.dataset.cur!==K.cur||dom.st.children.length!==(c.length+1)){
+    dom.st.innerHTML='<option value="0">srt</option>'+c.map((col,i)=>`<option value="${i+1}">${esc(col)}</option>`).join('');
+    dom.st.dataset.cur=K.cur;
+  }
   dom.st.value=String(K.sort);dom.st.hidden=!hasAccess('st-sel');
   dom.tools.querySelector('[data-a="dir"]').hidden=!hasAccess('dir');
   dom.tools.querySelector('[data-a="grid"]').hidden=!hasAccess('grid');
@@ -255,7 +323,6 @@ const renderChrome=()=>{
   Array.from(dom.act.options).forEach(opt=>{if(opt.value)opt.hidden=!hasAccess(opt.value);});
   const addBtn=dom.h.querySelector('[data-a="add"]');if(addBtn)addBtn.hidden=K.v!=='list'||NO_ADD.includes(K.cur)||!hasAccess('add',K.cur);
 };
-
 const renderMenuFooters=()=>{addFooter('back','<',K.cur);addFooter('refresh','refresh',K.cur);addFooter('v-toko','toko');addFooter('reset-db','reset db');if(K.pwaEvent)addFooter('pwa-install','install pwa');addFooter('logout','logout');};
 const renderNavFooters=()=>{if(K.v!=='dash')addFooter('v-dash','dashboard');if(K.cur!=='kas'||K.v==='dash')addFooter('v-kas','kas');if(K.cur!=='produk'||K.v==='dash')addFooter('v-shop','produk');if(K.cur!=='produk_jual'&&hasDraftItems('penjualan'))addFooter('v-jual','jual');if(K.cur!=='produk_beli'&&hasDraftItems('pembelian'))addFooter('v-beli','beli');};
 
@@ -390,6 +457,7 @@ const startScan=trg=>{
 };
 
 const persist=()=>{try{L.setItem('apex',JSON.stringify({cur:K.cur,u:K.u,store:K.store,shs:K.shs,cols:K.cols,vis:K.vis,fvis:K.fvis,db:K.db,parent:K.parent,grid:K.grid,df:K.df}));}catch{}};
+
 const render=()=>{
   dom.act.value='';dom.fb.innerHTML=dom.ft.innerHTML=dom.db.innerHTML=dom.ls.innerHTML='';document.body.dataset.grid=K.grid?'1':'0';
   if(!dom.scBox.hidden)addFooter('scan-stop','x');if(!dom.ib.hidden)addFooter('img-cls','tutup gambar');
@@ -426,7 +494,11 @@ const actions={
     if(K.v!=='dash'){K.v='dash';K.idx=null;K.readyOnly=false;return render();}
   },
   menu:()=>{if(!dom.scBox.hidden)stopScan();if(K.v==='menu'){dom.q.value='';K.v='dash';}else{K.v='menu';dom.q.value='';}render();},
-  refresh:async()=>{msg('syncing...');await syn(true);await testConn();msg('synced!');setTimeout(()=>msg(),1200);render();},
+  refresh:async()=>{
+    msg('syncing...');
+    await syn(true);
+    await testConn();
+  },
   scan:()=>{if(!dom.scBox.hidden)stopScan();else startScan('q');},
   'scan-prod':()=>{if(!dom.scBox.hidden)stopScan();else startScan('form-prod');},
   'scan-stop':stopScan,
@@ -455,7 +527,7 @@ const actions={
   'dl-cms-file':()=>{
     const r=K.db[K.cur]?.[K.idx]||[],fV=cV(r,K.cur,'file')||cV(r,K.cur,'foto'),kV=cV(r,K.cur,'konten'),jV=cV(r,K.cur,'judul')||'file';
     if(fV&&/^data:/i.test(fV)){const m=fV.match(/^data:([^;]+);base64,/),a=document.createElement('a');a.href=fV;a.download=`${jV}.${m?m[1].split('/')[1]:'bin'}`;document.body.appendChild(a);a.click();a.remove();}
-    else if(fV&&isSafeUrl(fV))W.open(fV,'_blank','noopener,noreferrer');
+    else if(fV&&isSafeUrl(fV))window.open(fV,'_blank','noopener,noreferrer');
     else if(kV)dl(kV,`${jV}.txt`,'text/plain;charset=utf-8');
     else msg('kosong');
   },
@@ -465,17 +537,42 @@ const actions={
   'jual-prod':()=>{if(K.idx>=0){const p=K.db.produk[K.idx]||[];if(!K.shs.includes('produk_jual'))K.shs.push('produk_jual');K.cur='produk_jual';K.prefill={idproduk:p[0],namaproduk:p[3],hargabeli:p[4],hargajual:p[5],qty:'1',diskon:'',catatan:''};K.prodIdx=K.idx;setView('form',-1);render();}},
   'beli-prod':()=>{if(K.idx>=0){const p=K.db.produk[K.idx]||[];if(!K.shs.includes('produk_beli'))K.shs.push('produk_beli');K.cur='produk_beli';K.prefill={idproduk:p[0],namaproduk:p[3],hargabeli:p[4],hargajual:p[5],qty:'1'};K.prodIdx=K.idx;setView('form',-1);render();}},
   'ecer-prod':()=>{if(K.idx>=0){const p=K.db.produk[K.idx]||[];if(!K.shs.includes('ecer'))K.shs.push('ecer');K.cur='ecer';K.prefill={idproduk:p[0],namaproduk:p[3],hargabeli:p[4],hargajual:p[5],qty:'1',diskon:'',catatan:''};K.prodIdx=K.idx;setView('form',-1);render();}},
+  
+  // ULTRA DYNAMIC BULKSHEET
   'save-bulksheet':()=>{
     const val=dom.fb.querySelector('textarea')?.value||'',updated=[];
     val.split(/\r?\n/).filter(Boolean).forEach(l=>{
-      const p=l.split(':'),n=S2(p[0]);if(!n||updated.includes(n))return;updated.push(n);K.db[n]=K.db[n]||[];
+      const p=l.split(':'),n=S2(p[0]);if(!n||updated.includes(n))return;
+      updated.push(n);K.db[n]=K.db[n]||[];
       const colsList=p.slice(1).join(':').split(',').map(S2).filter(Boolean);
-      K.cols[n]=colsList.length?colsList:(K.cols[n]||['id','col1']);if(!K.vis[n]?.length)K.vis[n]=K.cols[n].slice(0,2);
+      K.cols[n]=colsList.length?colsList:(K.cols[n]||['id','col1']);
+      if(!K.vis[n]?.length)K.vis[n]=K.cols[n].slice(0,2);
     });
     if(!updated.length)return msg('min 1 sheet');
     K.shs.forEach(s=>{if(!updated.includes(s)){delete K.db[s];delete K.cols[s];delete K.vis[s];delete K.fvis[s];}});
-    K.shs=updated;if(!K.shs.includes(K.cur))K.cur=K.shs[0];persist();syn(true);setView('list',null);render();
+    K.shs=updated;if(!K.shs.includes(K.cur))K.cur=K.shs[0];
+    persist();
+    syn(true);
+    setView('list',null);render();
   },
+
+  // ULTRA DYNAMIC SCHEMA EDITOR
+  'save-schema':()=>{
+    const nc=(dom.fb.querySelector('[data-f="cols"]')?.value||'').split(',').map(S2).filter(Boolean);
+    if(nc.length){
+      K.cols[K.cur]=nc;
+      K.vis[K.cur]=(dom.fb.querySelector('[data-f="vis"]')?.value||'').split(',').map(S2).filter(x=>nc.includes(x))||nc.slice(0,2);
+      K.fvis[K.cur]=(dom.fb.querySelector('[data-f="form"]')?.value||'').split(',').map(S2).filter(x=>nc.includes(x))||nc.slice();
+      (K.db[K.cur]||[]).forEach(r=>{
+        if(r.length>nc.length)r.length=nc.length;
+        while(r.length<nc.length)r.push('');
+      });
+      persist();
+      syn(true);
+    }
+    setView('list',null);render();
+  },
+
   'save-row':()=>{
     if(K.writing)return;K.writing=true;
     try{
@@ -581,47 +678,25 @@ const actions={
   'copy-nota':()=>{copyTxt(K.receiptRaw);msg('nota tersalin');},
   'save-store':()=>{dom.fb.querySelectorAll('[data-cfg]').forEach(i=>K.store[i.dataset.cfg]=i.value.trim());persist();syn(true);setView('list',null);render();},
   
-  // RESET DATABASE APEX ABSOLUTE:
-  // Mengosongkan seluruh database offline (memory K.db & object stores indexedDB)
-  // TIDAK MENGEMBALIKAN SKEMA KE DEFAULT (K.shs, K.cols, K.vis tetap utuh/ultra dinamis)
-  // Langsung trigger sinkronisasi skema & data dari server (syn(true))
+  // RESET DB MURNI OFFLINE (SKEMA TETAP TERJAGA)
   'reset-db':async()=>{
     if(K.conf!=='reset-db'){K.conf='reset-db';return msg('kosongkan db offline? klik lagi');}
     K.conf=null;
-    // 1. Kosongkan data runtime memory
-    K.shs.forEach(s=>{K.db[s]=[];idbClearStore(s);});
+    K.shs.forEach(s=>{
+      K.db[s]=[];
+      idbClearStore(s);
+    });
     idbClearStore('mut');
     L.vs='[]';
-    // 2. Simpan kondisi kosong offline
     persist();
     msg('db offline dikosongkan. sync...');
     render();
-    // 3. Sinkronkan skema & data fresh dari server
     await syn(true);
-    msg('db disinkronkan!');
-    setTimeout(()=>msg(),1200);
+    await testConn();
     render();
   },
 
   'pwa-install':()=>{if(K.pwaEvent){K.pwaEvent.prompt();K.pwaEvent.userChoice.then(()=>{K.pwaEvent=null;render();});}},
-  'save-schema':()=>{
-    const nc=(dom.fb.querySelector('[data-f="cols"]')?.value||'').split(',').map(S2).filter(Boolean);
-    if(nc.length){
-      K.cols[K.cur]=nc;K.vis[K.cur]=(dom.fb.querySelector('[data-f="vis"]')?.value||'').split(',').map(S2).filter(x=>nc.includes(x))||nc.slice(0,2);
-      K.fvis[K.cur]=(dom.fb.querySelector('[data-f="form"]')?.value||'').split(',').map(S2).filter(x=>nc.includes(x))||nc.slice();
-      (K.db[K.cur]||[]).forEach(r=>{if(r.length>nc.length)r.length=nc.length;while(r.length<nc.length)r.push('');});
-      persist();syn(true);
-    }
-    setView('list',null);render();
-  },
-  'save-bulk':()=>{
-    const cLen=cols().length;
-    dom.ls.querySelectorAll('[data-idx]').forEach(div=>{
-      const idx=parseInt(div.dataset.idx,10);
-      if(!isNaN(idx)&&K.db[K.cur][idx]){const pts=div.textContent.split('|').map(s=>s.trim());while(pts.length<cLen)pts.push('');const row=pts.slice(0,cLen);K.db[K.cur][idx]=row;save(row,K.cur,1);}
-    });
-    persist();syn(true);setView('list',null);render();
-  },
   grid:()=>{K.grid=!K.grid;render();},
   dir:()=>{K.dir=-K.dir;K.page=1;render();},
   more:()=>{K.page++;render();},
@@ -651,37 +726,7 @@ const actions={
     rd.readAsText(file);
   }
 };
-async function testConn() {
-  msg('cek koneksi...');
-  let d1Ok = false, gasOk = false;
 
-  // 1. Cek Cloudflare D1
-  if (HARD.d1Url) {
-    try {
-      const res = await req({ a: 'manifest' });
-      if (res && (res.ok || res.s === 'ok' || res.v)) d1Ok = true;
-    } catch (_) {}
-  }
-
-  // 2. Cek Google Apps Script
-  if (HARD.gasUrl) {
-    try {
-      const r = await fetch(HARD.gasUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ a: 'manifest' })
-      });
-      const j = await r.json();
-      if (j && (j.ok || j.s === 'ok' || j.v)) gasOk = true;
-    } catch (_) {}
-  }
-
-  // Tampilkan pesan sederhana
-  const pesan = `D1: ${d1Ok ? 'OK' : 'OFFLINE'} | GAS: ${gasOk ? 'OK' : 'OFFLINE'}`;
-  msg(pesan);
-  setTimeout(() => msg(), 3000);
-  return { d1: d1Ok, gas: gasOk };
-}
 /* Delegasi Peristiwa Global */
 document.addEventListener('click',e=>{
   const b=e.target.closest('[data-a]');
@@ -754,7 +799,6 @@ if('serviceWorker' in navigator&&(W.location.protocol.startsWith('http')||W.loca
 }
 W.addEventListener('online',()=>syn(true));
 
-// Bootstrapping
 (()=>{
   try{
     const d=JSON.parse(L.getItem('apex')||'null');
@@ -768,5 +812,7 @@ W.addEventListener('online',()=>syn(true));
       K.grid=Boolean(d.grid);
     }
   }catch{}
-  persist();initDB(K.shs,()=>{syn(true);});render();
+  persist();
+  initDB(K.shs,()=>{syn(true);});
+  render();
 })();
