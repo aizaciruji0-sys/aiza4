@@ -1,20 +1,19 @@
-*,::before,::after{box-sizing:border-box;margin:0;padding:0}
+*{box-sizing:border-box;margin:0;padding:0}
 [hidden]{display:none!important}
-body{font:12px/1.2 sans-serif;display:flex;flex-direction:column;gap:2px;padding:2px 2px 32px;overflow-x:hidden}
+body{font:12px/1.2 sans-serif;word-break:break-word;display:flex;flex-direction:column;gap:2px;padding:2px 2px 32px;overflow-x:hidden}
 header,footer,main,#tools,#box-form,#box-nota{display:flex;flex-wrap:wrap;gap:2px;width:100%}
 header,footer{background:#fff;z-index:10}
 header{position:sticky;top:0;flex-wrap:nowrap}
 footer{position:fixed;inset:auto 0 0;padding:2px}
-header>input{flex:1;min-width:60px}
+button,input,select,textarea{flex:1 1 120px;min-width:0;min-height:24px;padding:2px 4px;border:1px solid;background:none;color:inherit;font:inherit}
+header>input{flex:1 60px}
 header>button{flex:none;padding:2px 5px}
-button,input,select,textarea{flex:1 1 120px;min-width:0;min-height:24px;padding:2px 4px;border:1px solid;background:none;color:inherit;font:inherit;word-break:break-word}
-textarea{resize:none;overflow-y:auto}
-#box-dash{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:2px;width:100%}
+textarea{resize:none}
+#box-dash,#list{display:grid;gap:2px}
+#box-dash{grid-template-columns:repeat(auto-fit,minmax(120px,1fr))}
 #box-dash>button{padding:4px;text-align:left}
-#list{display:flex;flex-direction:column;gap:2px;width:100%}
-#list>div{padding:2px 0;word-break:break-word}
-[data-grid="1"] #list{flex-direction:row;flex-wrap:wrap}
-[data-grid="1"] #list>div{flex:1 1 calc(20% - 2px);min-width:min(100%,120px)}
-[data-grid="1"] #list img{width:100%;height:75px;object-fit:cover;display:block}
-#tape{max-width:280px;white-space:pre-wrap;word-break:break-word;font:11px/1.2 monospace}
-@media print{body{padding:0}header,footer,#tools,#msg{display:none!important}#tape{width:58mm!important;max-width:none}}
+#list>div{padding:2px 0}
+[data-grid="1"] #list{grid-template-columns:repeat(auto-fill,minmax(max(120px,20%),1fr))}
+[data-grid="1"] img{width:100%;height:75px;object-fit:cover;display:block}
+#tape{width:100%;max-width:280px;white-space:pre-wrap;font:11px/1.2 monospace}
+@media print{body{padding:0}header,footer,#tools,#msg{display:none}#tape{width:58mm;max-width:none}}
