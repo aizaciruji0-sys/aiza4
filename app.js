@@ -426,7 +426,7 @@ const actions={
     if(K.v!=='dash'){K.v='dash';K.idx=null;K.readyOnly=false;return render();}
   },
   menu:()=>{if(!dom.scBox.hidden)stopScan();if(K.v==='menu'){dom.q.value='';K.v='dash';}else{K.v='menu';dom.q.value='';}render();},
-  refresh:async()=>{msg('syncing...');await syn(true);msg('synced!');setTimeout(()=>msg(),1200);render();},
+  refresh:async()=>{msg('syncing...');await syn(true);await testConn();msg('synced!');setTimeout(()=>msg(),1200);render();},
   scan:()=>{if(!dom.scBox.hidden)stopScan();else startScan('q');},
   'scan-prod':()=>{if(!dom.scBox.hidden)stopScan();else startScan('form-prod');},
   'scan-stop':stopScan,
@@ -651,7 +651,37 @@ const actions={
     rd.readAsText(file);
   }
 };
+async function testConn() {
+  msg('cek koneksi...');
+  let d1Ok = false, gasOk = false;
 
+  // 1. Cek Cloudflare D1
+  if (HARD.d1Url) {
+    try {
+      const res = await req({ a: 'manifest' });
+      if (res && (res.ok || res.s === 'ok' || res.v)) d1Ok = true;
+    } catch (_) {}
+  }
+
+  // 2. Cek Google Apps Script
+  if (HARD.gasUrl) {
+    try {
+      const r = await fetch(HARD.gasUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ a: 'manifest' })
+      });
+      const j = await r.json();
+      if (j && (j.ok || j.s === 'ok' || j.v)) gasOk = true;
+    } catch (_) {}
+  }
+
+  // Tampilkan pesan sederhana
+  const pesan = `D1: ${d1Ok ? 'OK' : 'OFFLINE'} | GAS: ${gasOk ? 'OK' : 'OFFLINE'}`;
+  msg(pesan);
+  setTimeout(() => msg(), 3000);
+  return { d1: d1Ok, gas: gasOk };
+}
 /* Delegasi Peristiwa Global */
 document.addEventListener('click',e=>{
   const b=e.target.closest('[data-a]');
