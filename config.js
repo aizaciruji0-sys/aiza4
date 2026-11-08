@@ -3,7 +3,7 @@
  * APEX Ultra Dinamis Config
  */
 const HARD = {
-  d1Url: 'https://aiza4.aizaciruji0.workers.dev/',
+  d1Url: 'https://aiza4.aizaciruji0.workers.dev',
   gasUrl: 'https://script.google.com/macros/s/AKfycbzMwt9mhJNBbgqEAaQq_SP4WkAammzczt_kkI3oqgXF_26GcvOSfIOkVuWQ_dTxlnrb/exec',
   store: { name: 'TB. AIZA CIRUJI', sub: 'Sembako Percetakan Material', phone: '08787 117 6447', bank: 'BRI: 0166 0113 7004 507', footer: 'TERIMA KASIH!' },
   shs: ['penjualan','produk_jual','produk','pembelian','produk_beli','kas','kontak','cicil','ecer','users','roles','cms','absen'],
