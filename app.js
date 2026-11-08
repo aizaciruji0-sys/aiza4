@@ -1,32 +1,35 @@
 'use strict';
 /* ============================================================
-   APEX KISS ABSOLUTE CORE ENGINE — ULTRA STREAMLINED + CMS/TSV/SCAN
+   APEX ULTRA KISS ABSOLUTE — MONOFLOW, ZERO-BLOAT, ANTI-BUG
    ============================================================ */
 const W=window,L=localStorage;
 let db=null,syncing=false,syncDebounce=null,scanStream=null,scanTimer=null;
 const ch=(typeof BroadcastChannel!=='undefined')?new BroadcastChannel('sync'):{postMessage:()=>{},onmessage:null};
 ch.onmessage=e=>{if(e.data==='synced')render();else if(e.data==='kick'&&!syncing)syn();};
 
-function idbPut(row,st='mut'){if(!db)return;try{db.transaction(st,'readwrite').objectStore(st).put(row);}catch{}}
+// IndexedDB Sederhana Abadi (Hanya 2 Store: 'kv' dan 'mut')
+function initDB(cb){
+  try{
+    const req=indexedDB.open('apex_db',1);
+    req.onupgradeneeded=e=>{
+      const d=e.target.result;
+      if(!d.objectStoreNames.contains('kv'))d.createObjectStore('kv');
+      if(!d.objectStoreNames.contains('mut'))d.createObjectStore('mut',{keyPath:'i'});
+    };
+    req.onsuccess=e=>{db=e.target.result;cb?.(db);};
+    req.onerror=()=>{cb?.(null);};
+  }catch(_){cb?.(null);}
+}
+function idbPut(val,key,st='kv'){if(!db)return;try{const tx=db.transaction(st,'readwrite');st==='mut'?tx.objectStore(st).put(val):tx.objectStore(st).put(val,key);}catch{}}
+function idbGet(key,st='kv'){return new Promise(res=>{if(!db)return res(null);try{const rq=db.transaction(st,'readonly').objectStore(st).get(key);rq.onsuccess=()=>res(rq.result);rq.onerror=()=>res(null);}catch{res(null);}});}
+function idbGetAll(st='mut'){return new Promise(res=>{if(!db)return res([]);try{const rq=db.transaction(st,'readonly').objectStore(st).getAll();rq.onsuccess=()=>res(rq.result||[]);rq.onerror=()=>res([]);}catch{res([]);}});}
 function idbClearStore(st){if(!db)return;try{if(db.objectStoreNames.contains(st))db.transaction(st,'readwrite').objectStore(st).clear();}catch{}}
+function idbDelKeys(keys,st='mut'){if(!db||!keys?.length)return;try{const tx=db.transaction(st,'readwrite'),s=tx.objectStore(st);keys.forEach(k=>s.delete(k));}catch{}}
 
 function save(row,targetTable=K.cur,actionType=2){
   const item={i:Date.now().toString(36)+Math.random().toString(36).slice(2,6),t:TI(targetTable),y:actionType,r:Array.isArray(row)?row:Object.values(row),ts:Date.now()};
-  idbPut(item,'mut');ch.postMessage('kick');
-  if(!syncing){clearTimeout(syncDebounce);syncDebounce=setTimeout(()=>syn(false),40);}
-}
-
-function initDB(tables=[],onReady){
-  try{
-    const req=indexedDB.open('r',112);
-    req.onupgradeneeded=e=>{
-      const d=e.target.result;
-      tables.forEach(t=>!d.objectStoreNames.contains(t)&&d.createObjectStore(t,{keyPath:'_seq',autoIncrement:true}));
-      if(!d.objectStoreNames.contains('mut'))d.createObjectStore('mut',{keyPath:'i'});
-    };
-    req.onsuccess=e=>{db=e.target.result;onReady?.(db);};
-    req.onerror=()=>{onReady?.(null);};
-  }catch(_){onReady?.(null);}
+  idbPut(item,null,'mut');ch.postMessage('kick');
+  if(!syncing){clearTimeout(syncDebounce);syncDebounce=setTimeout(()=>syn(false),50);}
 }
 
 async function req(p={}){
@@ -53,12 +56,12 @@ async function syn(force=false){
   try{
     const tables=K.shs||HARD.shs;
     if(force)L.vs='[]';
-    const ver=JSON.parse(L.vs||'[]'),muts=await ga('mut');
+    const ver=JSON.parse(L.vs||'[]'),muts=await idbGetAll('mut');
     let m=null;
 
     if(muts.length){
       const pushRes=await req({a:'push',m:muts,tn:tables,db:K.db,cols:K.cols,shs:K.shs,gasUrl:HARD.gasUrl});
-      if(pushRes?.ok){await rm('mut',muts.map(x=>x.i));m=pushRes.manifest||pushRes.data?.manifest;isSuccess=true;}
+      if(pushRes?.ok){idbDelKeys(muts.map(x=>x.i),'mut');m=pushRes.manifest||pushRes.data?.manifest;isSuccess=true;}
     }
 
     if(!m)m=(await req({a:'manifest',tn:tables,cols:K.cols}))?.data||(await req({a:'manifest',tn:tables,cols:K.cols}));
@@ -73,13 +76,17 @@ async function syn(force=false){
       const toPull=tables.map((_,i)=>({t:i,v:force?'':(ver[i]||'')})).filter((_,i)=>force||(m.v[i]&&m.v[i]!==ver[i]));
       if(toPull.length){
         const b=await req({a:'pull_batch',reqs:toPull,tn:tables,cols:K.cols});
-        (b?.data?.results||b?.results||[]).forEach(async r=>{
+        (b?.data?.results||b?.results||[]).forEach(r=>{
           if(r?.v){
             ver[r.t]=r.v;
-            await putRows(r.t,r.r,r.cols);
+            const tn=K.shs[r.t];
+            if(tn){
+              K.db[tn]=r.r||[];
+              if(Array.isArray(r.cols)&&r.cols.length)K.cols[tn]=r.cols;
+            }
           }
         });
-        L.vs=JSON.stringify(ver);ch.postMessage('synced');render();
+        L.vs=JSON.stringify(ver);persist();ch.postMessage('synced');render();
       }
     }else if(m?.db){
       isSuccess=true;
@@ -92,24 +99,13 @@ async function syn(force=false){
   }
   return isSuccess;
 }
-Object.assign(W,{idbPut,idbClearStore,save,initDB,req,syn});
 
 const TI=s=>K.shs.indexOf(s),
-      ga=table=>new Promise(res=>{if(!db)return res([]);try{const rq=db.transaction(table,'readonly').objectStore(table).getAll();rq.onsuccess=()=>res(rq.result||[]);rq.onerror=()=>res([]);}catch{res([]);}}),
-      rm=(table,keys)=>new Promise(res=>{if(!db||!keys?.length)return res();try{const tx=db.transaction(table,'readwrite'),st=tx.objectStore(table);keys.forEach(k=>st.delete(k));tx.oncomplete=()=>res();tx.onerror=()=>res();}catch{res();}});
-
-const putRows=async(idx,rows,cNames)=>{
-  const tn=K.shs[idx];if(!tn)return false;
-  K.db[tn]=rows.slice();
-  if(Array.isArray(cNames)&&cNames.length)K.cols[tn]=cNames.slice();
-  persist();return true;
-};
-
-const dl=(content,fileName,mimeType='text/plain;charset=utf-8')=>{
-  const blob=new Blob([content],{type:mimeType}),u=URL.createObjectURL(blob),a=document.createElement('a');
-  a.href=u;a.download=fileName;document.body.appendChild(a);a.click();
-  setTimeout(()=>{a.remove();URL.revokeObjectURL(u);},400);
-};
+      dl=(content,fileName,mimeType='text/plain;charset=utf-8')=>{
+        const blob=new Blob([content],{type:mimeType}),u=URL.createObjectURL(blob),a=document.createElement('a');
+        a.href=u;a.download=fileName;document.body.appendChild(a);a.click();
+        setTimeout(()=>{a.remove();URL.revokeObjectURL(u);},400);
+      };
 
 const K={
   u:L.u||'',cur:'penjualan',v:'dash',hist:[],idx:null,page:1,sort:0,dir:1,grid:false,
@@ -121,7 +117,7 @@ const K={
 };
 
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])),
-      isSafeUrl=u=>{const s=String(u||'').trim();return /^https?:\/\//i.test(s)||/^data:(image|application|text)\/[a-zA-Z0-9.\-_+]+;base64,/i.test(s)},
+      isSafeUrl=u=>{const s=String(u||'').trim();return /^https?:\/\//i.test(s)||/^data:(image|application|text)\/[a-zA-Z0-9.\-_+]+;base64,/i.test(s);},
       dom={
         h:document.getElementById('h'),q:document.getElementById('q'),msg:document.getElementById('msg'),
         main:document.getElementById('main'),tools:document.getElementById('tools'),
@@ -133,10 +129,10 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&
       };
 
 const S2=s=>String(s||'').trim().toLowerCase(),
-      N=v=>{if(v==null)return 0;let s=String(v).trim().replace(/\s+/g,'');if(s.includes(',')&&s.includes('.'))s=s.lastIndexOf(',')>s.lastIndexOf('.')?s.replace(/\./g,'').replace(',','.'):s.replace(/,/g,'');else if(s.includes(','))s=s.replace(',','.');const n=parseFloat(s);return(!isFinite(n)||n<0)?0:n},
+      N=v=>{if(v==null)return 0;const n=parseFloat(String(v).replace(/[^\d.-]/g,''));return(!isFinite(n)||n<0)?0:n;},
       cols=(s=K.cur)=>K.cols[s]||[],
       cI=(s,k)=>cols(s).indexOf(k),
-      cV=(r,s,k)=>{const i=cI(s,k);return(r&&i>-1&&r[i]!==undefined)?String(r[i]):''},
+      cV=(r,s,k)=>{const i=cI(s,k);return(r&&i>-1&&r[i]!==undefined)?String(r[i]):'';},
       vis=(s=K.cur)=>(K.vis[s]||cols(s)).filter(c=>cols(s).includes(c)),
       fvis=(s=K.cur)=>((K.fvis?.[s]?.length)?K.fvis[s]:cols(s)).filter(c=>cols(s).includes(c));
 
@@ -193,41 +189,27 @@ const syncStockDelta=(sh,o,n)=>{
 };
 const msg=t=>{dom.msg.innerHTML='';dom.msg.hidden=!t;if(t)dom.msg.textContent=t;};
 
-/* BARCODE SCANNER (CAMERA) */
+/* BARCODE SCANNER */
 const stopScan=()=>{
   if(scanTimer){clearInterval(scanTimer);scanTimer=null;}
-  if(scanStream){
-    scanStream.getTracks().forEach(t=>t.stop());
-    scanStream=null;
-  }
+  if(scanStream){scanStream.getTracks().forEach(t=>t.stop());scanStream=null;}
   dom.scanBox.hidden=true;
 };
-
 const startScan=()=>{
-  if(!('BarcodeDetector' in W)){
-    msg('Browser tidak mendukung BarcodeDetector');
-    return;
-  }
+  if(!('BarcodeDetector' in W))return msg('BarcodeDetector tidak didukung');
   const detector=new BarcodeDetector({formats:['qr_code','ean_13','ean_8','code_128','code_39','upc_a']});
   navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}}).then(stream=>{
-    scanStream=stream;
-    dom.scanVid.srcObject=stream;
-    dom.scanVid.play();
-    dom.scanBox.hidden=false;
+    scanStream=stream;dom.scanVid.srcObject=stream;dom.scanVid.play();dom.scanBox.hidden=false;
     scanTimer=setInterval(async()=>{
       try{
         const codes=await detector.detect(dom.scanVid);
         if(codes&&codes.length>0){
           const val=codes[0].rawValue;
-          stopScan();
-          dom.q.value=val;
-          K.page=1;
-          render();
-          msg(`Scan: ${val}`);
+          stopScan();dom.q.value=val;K.page=1;render();msg(`Scan: ${val}`);
         }
       }catch(_){}
     },250);
-  }).catch(()=>{msg('Kamera tidak dapat diakses');});
+  }).catch(()=>msg('Kamera tidak dapat diakses'));
 };
 
 const calcItems=(t,id)=>{
@@ -461,7 +443,14 @@ const renderList=isBulkEdit=>{
 
 const renderNota=()=>{msg('nota');dom.tape.textContent=K.receiptRaw;addFooter('back','<',K.cur);addFooter('rawbt','rawbt',K.cur);addFooter('jpg','jpg',K.cur);addFooter('print','print',K.cur);renderNavFooters();};
 const updateFormThumb=inp=>{if(!inp)return;const col=inp.dataset.col||'',val=(inp.value||'').trim();let th=dom.fb.querySelector(`img[data-thumb-col="${CSS.escape(col)}"]`);if(val&&(/foto/i.test(col)||isSafeUrl(val))){if(!th){th=document.createElement('img');th.dataset.thumbCol=col;th.alt='thumb';th.onerror=()=>th.remove();inp.insertAdjacentElement('afterend',th);}th.src=val;}else if(th)th.remove();};
-const persist=()=>{try{L.setItem('apex',JSON.stringify({cur:K.cur,u:K.u,store:K.store,shs:K.shs,cols:K.cols,vis:K.vis,fvis:K.fvis,db:K.db,parent:K.parent,grid:K.grid,df:K.df}));}catch{}};
+
+const persist=()=>{
+  try{
+    const payload={cur:K.cur,u:K.u,store:K.store,shs:K.shs,cols:K.cols,vis:K.vis,fvis:K.fvis,parent:K.parent,grid:K.grid,df:K.df};
+    L.setItem('apex',JSON.stringify(payload));
+    idbPut(K.db,'apex_matrix');
+  }catch{}
+};
 
 const render=()=>{
   dom.act.value='';dom.fb.innerHTML=dom.ft.innerHTML=dom.db.innerHTML=dom.ls.innerHTML='';document.body.dataset.grid=K.grid?'1':'0';
@@ -670,12 +659,9 @@ const actions={
       }catch(_){}
     }
 
-    K.shs.forEach(s=>{
-      K.db[s]=[];
-      idbClearStore(s);
-    });
+    idbClearStore('kv');
     idbClearStore('mut');
-
+    K.shs.forEach(s=>{K.db[s]=[];});
     L.vs='[]';
     persist();
     render();
@@ -838,13 +824,13 @@ if('serviceWorker' in navigator&&(W.location.protocol.startsWith('http')||W.loca
 }
 W.addEventListener('online',()=>syn(true));
 
-// Inisialisasi Aplikasi
+// Inisialisasi Booting Ringkas
 (()=>{
   try{
     const d=JSON.parse(L.getItem('apex')||'null');
     if(d&&typeof d==='object'){
       if(d.store&&typeof d.store==='object')K.store=Object.assign(K.store,d.store);
-      ['shs','cols','vis','fvis','db'].forEach(k=>{if(d[k])K[k]=d[k];});
+      ['shs','cols','vis','fvis'].forEach(k=>{if(d[k])K[k]=d[k];});
       if(d.parent&&typeof d.parent==='object')K.parent=d.parent;
       if(d.cur&&K.shs.includes(d.cur))K.cur=d.cur;
       if(d.u)K.u=L.u=d.u;
@@ -852,7 +838,11 @@ W.addEventListener('online',()=>syn(true));
       K.grid=Boolean(d.grid);
     }
   }catch{}
-  persist();
-  initDB(K.shs,()=>{syn(true);});
-  render();
+  
+  initDB(async()=>{
+    const localMatrix=await idbGet('apex_matrix');
+    if(localMatrix&&typeof localMatrix==='object')Object.assign(K.db,localMatrix);
+    render();
+    syn(true);
+  });
 })();
