@@ -55,6 +55,7 @@ async function req(p={}){
 async function syn(force=false){
   if(!navigator.onLine||(syncing&&!force)||!db)return false;
   syncing=true;
+  msg('sedang sync...');
   let isSuccess=false;
   try{
     const tables=K.shs||HARD.shs;
@@ -95,8 +96,10 @@ async function syn(force=false){
       isSuccess=true;
       Object.assign(K.db,m.db);persist();ch.postMessage('synced');render();
     }
+    if(isSuccess)msg();
   }catch(_){
     isSuccess=false;
+    msg('offline');
   }finally{
     syncing=false;
   }
@@ -513,6 +516,7 @@ const actions={
   refresh:async()=>{
     const ok = await syn(true);
     if(!ok)msg('offline');
+    else msg();
     render();
   },
   'df-today':()=>{K.df.from=K.df.to=today();persist();render();},
