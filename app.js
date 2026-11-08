@@ -163,7 +163,7 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&
 
 const S2=s=>String(s||'').trim().toLowerCase(),
       N=v=>{if(v==null)return 0;let s=String(v).trim().replace(/\s+/g,'');if(s.includes(',')&&s.includes('.'))s=s.lastIndexOf(',')>s.lastIndexOf('.')?s.replace(/\./g,'').replace(',','.'):s.replace(/,/g,'');else if(s.includes(','))s=s.replace(',','.');const n=parseFloat(s);return(!isFinite(n)||n<0)?0:n},
-      cols=(s=K.cur)=>K.cols[s]||['id','col1'],
+      cols=(s=K.cur)=>K.cols[s]||[],
       cI=(s,k)=>cols(s).indexOf(k),
       cV=(r,s,k)=>{const i=cI(s,k);return(r&&i>-1&&r[i]!==undefined)?String(r[i]):''},
       vis=(s=K.cur)=>(K.vis[s]||cols(s)).filter(c=>cols(s).includes(c)),
@@ -543,10 +543,11 @@ const actions={
     const val=dom.fb.querySelector('textarea')?.value||'',updated=[];
     val.split(/\r?\n/).filter(Boolean).forEach(l=>{
       const p=l.split(':'),n=S2(p[0]);if(!n||updated.includes(n))return;
-      updated.push(n);K.db[n]=K.db[n]||[];
       const colsList=p.slice(1).join(':').split(',').map(S2).filter(Boolean);
-      K.cols[n]=colsList.length?colsList:(K.cols[n]||['id','col1']);
-      if(!K.vis[n]?.length)K.vis[n]=K.cols[n].slice(0,2);
+      if(!colsList.length)return;
+      updated.push(n);K.db[n]=K.db[n]||[];
+      K.cols[n]=colsList;
+      if(!K.vis[n]?.length)K.vis[n]=K.cols[n].slice(0,4);
     });
     if(!updated.length)return msg('min 1 sheet');
     K.shs.forEach(s=>{if(!updated.includes(s)){delete K.db[s];delete K.cols[s];delete K.vis[s];delete K.fvis[s];}});
@@ -561,7 +562,7 @@ const actions={
     const nc=(dom.fb.querySelector('[data-f="cols"]')?.value||'').split(',').map(S2).filter(Boolean);
     if(nc.length){
       K.cols[K.cur]=nc;
-      K.vis[K.cur]=(dom.fb.querySelector('[data-f="vis"]')?.value||'').split(',').map(S2).filter(x=>nc.includes(x))||nc.slice(0,2);
+      K.vis[K.cur]=(dom.fb.querySelector('[data-f="vis"]')?.value||'').split(',').map(S2).filter(x=>nc.includes(x))||nc.slice(0,4);
       K.fvis[K.cur]=(dom.fb.querySelector('[data-f="form"]')?.value||'').split(',').map(S2).filter(x=>nc.includes(x))||nc.slice();
       (K.db[K.cur]||[]).forEach(r=>{
         if(r.length>nc.length)r.length=nc.length;
