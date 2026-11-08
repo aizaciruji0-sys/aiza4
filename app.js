@@ -1,24 +1,11 @@
 'use strict';
 /* ============================================================
-   APEX KISS ABSOLUTE CORE ENGINE (ULTRA DYNAMIC TABLE & SCHEMA)
+   APEX KISS ABSOLUTE CORE ENGINE — ULTRA STREAMLINED (SLIM)
    ============================================================ */
 const W=window,L=localStorage;
 let db=null,syncing=false,syncDebounce=null;
 const ch=(typeof BroadcastChannel!=='undefined')?new BroadcastChannel('sync'):{postMessage:()=>{},onmessage:null};
 ch.onmessage=e=>{if(e.data==='synced')render();else if(e.data==='kick'&&!syncing)syn();};
-
-async function pullStream(url,onRow){
-  try{
-    const res=await fetch(url);if(!res.body)return;
-    const reader=res.body.pipeThrough(new TextDecoderStream()).getReader();let buf='';
-    while(true){
-      const{value,done}=await reader.read();if(done)break;
-      buf+=value;const lines=buf.split('\n');buf=lines.pop();
-      for(const l of lines){if(l.trim()){try{onRow(JSON.parse(l));}catch{}}}
-    }
-    if(buf.trim()){try{onRow(JSON.parse(buf));}catch{}}
-  }catch(_){}
-}
 
 function idbPut(row,st='mut'){if(!db)return;try{db.transaction(st,'readwrite').objectStore(st).put(row);}catch{}}
 function idbClearStore(st){if(!db)return;try{if(db.objectStoreNames.contains(st))db.transaction(st,'readwrite').objectStore(st).clear();}catch{}}
@@ -44,7 +31,7 @@ function initDB(tables=[],onReady){
 
 async function req(p={}){
   p.u=p.u||L.u||'';
-  if(HARD.d1Url&&['pull_batch','pull','manifest','push','stream','ensure_all','schema_crud'].includes(p.a)){
+  if(HARD.d1Url&&['pull_batch','manifest','push'].includes(p.a)){
     try{
       const r=await(await fetch(HARD.d1Url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)})).json();
       if(r?.ok||r?.s==='ok'||r?.status==='ok')return r;
@@ -59,61 +46,23 @@ async function req(p={}){
   });
 }
 
-function mut(table,data,actionType){save(data,table,actionType);}
-
-async function testConn(){
-  msg('cek koneksi...');
-  let d1Ok=false,gasOk=false;
-  if(HARD.d1Url){
-    try{
-      const res=await req({a:'manifest',tn:K.shs,cols:K.cols});
-      if(res&&(res.ok||res.v||res.data?.v))d1Ok=true;
-    }catch{}
-  }
-  if(HARD.gasUrl){
-    try{
-      const r=await fetch(HARD.gasUrl,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({a:'manifest',tn:K.shs,cols:K.cols})});
-      const j=await r.json();
-      if(j&&(j.ok||j.v||j.data?.v))gasOk=true;
-    }catch{}
-  }
-  const statusStr=`D1: ${d1Ok?'OK':'OFFLINE'} | GAS: ${gasOk?'OK':'OFFLINE'}`;
-  msg(statusStr);
-  setTimeout(()=>msg(),3000);
-  return {d1:d1Ok,gas:gasOk};
-}
-
 async function syn(force=false){
-  if(!navigator.onLine||(syncing&&!force)||!db)return;
+  if(!navigator.onLine||(syncing&&!force)||!db)return false;
   syncing=true;
+  let isSuccess=false;
   try{
     const tables=K.shs||HARD.shs;
     if(force)L.vs='[]';
     const ver=JSON.parse(L.vs||'[]'),muts=await ga('mut');
     let m=null;
 
-    // 1. PUSH DELTA MUTATIONS BESERTA SCHEMA AKTIF
+    // 1. PUSH DELTA MUTATIONS
     if(muts.length){
-      const pushRes=await req({a:'push',m:typeof pack==='function'?pack(muts):muts,tn:tables,db:K.db,cols:K.cols,shs:K.shs,gasUrl:HARD.gasUrl});
-      if(pushRes?.ok){await rm('mut',muts.map(x=>x.i));m=pushRes.manifest||pushRes.data?.manifest;}
+      const pushRes=await req({a:'push',m:muts,tn:tables,db:K.db,cols:K.cols,shs:K.shs,gasUrl:HARD.gasUrl});
+      if(pushRes?.ok){await rm('mut',muts.map(x=>x.i));m=pushRes.manifest||pushRes.data?.manifest;isSuccess=true;}
     }
 
-    // 2. STREAM PULL (CLOUDFLARE D1) DENGAN AUTO RESOLVE SKEMA DINAMIS
-    if(HARD.d1Url&&/^https?:\/\//i.test(HARD.d1Url)){
-      try{
-        let streamChanged=false;
-        await pullStream(HARD.d1Url+'?stream=1',o=>{
-          if(o?.t){
-            if(!K.shs.includes(o.t)){K.shs.push(o.t);streamChanged=true;}
-            if(Array.isArray(o.cols)&&o.cols.length){K.cols[o.t]=o.cols.slice();if(!K.vis[o.t])K.vis[o.t]=o.cols.slice(0,4);streamChanged=true;}
-            if(Array.isArray(o.r)){K.db[o.t]=o.r;streamChanged=true;}
-          }
-        });
-        if(streamChanged){persist();ch.postMessage('synced');render();return;}
-      }catch{}
-    }
-
-    // 3. MANIFEST CEK DENGAN SINKRONISASI DAFTAR TABEL & KOLOM
+    // 2. MANIFEST VERIFIKASI (AUTO SKEMA DINAMIS)
     if(!m)m=(await req({a:'manifest',tn:tables,cols:K.cols}))?.data||(await req({a:'manifest',tn:tables,cols:K.cols}));
     if(m?.shs&&Array.isArray(m.shs)&&m.shs.length){
       m.shs.forEach(s=>{if(!K.shs.includes(s))K.shs.push(s);});
@@ -121,7 +70,9 @@ async function syn(force=false){
     if(m?.cols&&typeof m.cols==='object')Object.assign(K.cols,m.cols);
     if(m?.vis&&typeof m.vis==='object')Object.assign(K.vis,m.vis);
 
+    // 3. PULL BATCH
     if(m?.v){
+      isSuccess=true;
       const toPull=tables.map((_,i)=>({t:i,v:force?'':(ver[i]||'')})).filter((_,i)=>force||(m.v[i]&&m.v[i]!==ver[i]));
       if(toPull.length){
         const b=await req({a:'pull_batch',reqs:toPull,tn:tables,cols:K.cols});
@@ -134,15 +85,21 @@ async function syn(force=false){
         L.vs=JSON.stringify(ver);ch.postMessage('synced');render();
       }
     }else if(m?.db){
+      isSuccess=true;
       Object.assign(K.db,m.db);persist();ch.postMessage('synced');render();
     }
-  }finally{syncing=false;}
+  }catch(_){
+    isSuccess=false;
+  }finally{
+    syncing=false;
+  }
+  return isSuccess;
 }
-Object.assign(W,{pullStream,idbPut,idbClearStore,save,initDB,req,mut,syn,testConn});
+Object.assign(W,{idbPut,idbClearStore,save,initDB,req,syn});
 
-const T=HARD.shs,TI=s=>K.shs.indexOf(s),R=(t,d)=>Array.isArray(d)?d:Object.values(d);
-const ga=table=>new Promise(res=>{if(!db)return res([]);try{const rq=db.transaction(table,'readonly').objectStore(table).getAll();rq.onsuccess=()=>res(rq.result||[]);rq.onerror=()=>res([]);}catch{res([]);}});
-const rm=(table,keys)=>new Promise(res=>{if(!db||!keys?.length)return res();try{const tx=db.transaction(table,'readwrite'),st=tx.objectStore(table);keys.forEach(k=>st.delete(k));tx.oncomplete=()=>res();tx.onerror=()=>res();}catch{res();}});
+const TI=s=>K.shs.indexOf(s),
+      ga=table=>new Promise(res=>{if(!db)return res([]);try{const rq=db.transaction(table,'readonly').objectStore(table).getAll();rq.onsuccess=()=>res(rq.result||[]);rq.onerror=()=>res([]);}catch{res([]);}}),
+      rm=(table,keys)=>new Promise(res=>{if(!db||!keys?.length)return res();try{const tx=db.transaction(table,'readwrite'),st=tx.objectStore(table);keys.forEach(k=>st.delete(k));tx.oncomplete=()=>res();tx.onerror=()=>res();}catch{res();}});
 
 const putRows=async(idx,rows,cNames)=>{
   const tn=K.shs[idx];if(!tn)return false;
@@ -156,15 +113,20 @@ const K={
   conf:null,prefill:null,parent:null,receiptRaw:'',prodIdx:null,readyOnly:false,
   df:{u:'',from:'',to:'',kat:''},store:{...HARD.store},
   shs:[...HARD.shs],cols:JSON.parse(JSON.stringify(HARD.cols)),vis:JSON.parse(JSON.stringify(HARD.vis)),
-  fvis:{},db:JSON.parse(JSON.stringify(HARD.db)),scanTarget:'q',scanStream:null,scanActive:false,
+  fvis:{},db:JSON.parse(JSON.stringify(HARD.db)),
   refTargetInp:null,savedFormState:null,pwaEvent:null,writing:false
 };
 
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])),
-      qEsc=s=>W.CSS&&CSS.escape?CSS.escape(s):String(s).replace(/["'\\]/g,'\\$&'),
       isSafeUrl=u=>{const s=String(u||'').trim();return /^https?:\/\//i.test(s)||/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(s)},
-      $=id=>document.getElementById(id),
-      dom={h:$('h'),q:$('q'),msg:$('msg'),main:$('main'),tools:$('tools'),f:$('f'),fCam:$('f-cam'),fImg:$('f-img'),fDoc:$('f-doc'),sh:$('sh-sel'),st:$('st-sel'),act:$('act-sel'),fb:$('box-form'),db:$('box-dash'),ls:$('list'),ft:$('ft'),tape:$('tape'),bn:$('box-nota'),scBox:$('scan-box'),scVid:$('scan-vid'),ib:$('img-box'),it:$('img-trg')};
+      dom={
+        h:document.getElementById('h'),q:document.getElementById('q'),msg:document.getElementById('msg'),
+        main:document.getElementById('main'),tools:document.getElementById('tools'),
+        fCam:document.getElementById('f-cam'),fImg:document.getElementById('f-img'),fDoc:document.getElementById('f-doc'),
+        sh:document.getElementById('sh-sel'),st:document.getElementById('st-sel'),act:document.getElementById('act-sel'),
+        fb:document.getElementById('box-form'),db:document.getElementById('box-dash'),ls:document.getElementById('list'),
+        ft:document.getElementById('ft'),tape:document.getElementById('tape'),bn:document.getElementById('box-nota')
+      };
 
 const S2=s=>String(s||'').trim().toLowerCase(),
       N=v=>{if(v==null)return 0;let s=String(v).trim().replace(/\s+/g,'');if(s.includes(',')&&s.includes('.'))s=s.lastIndexOf(',')>s.lastIndexOf('.')?s.replace(/\./g,'').replace(',','.'):s.replace(/,/g,'');else if(s.includes(','))s=s.replace(',','.');const n=parseFloat(s);return(!isFinite(n)||n<0)?0:n},
@@ -180,7 +142,7 @@ const TRXM={penjualan:{ch:'produk_jual',fk:'idpenjualan',p:'hargajual'},pembelia
       parentOf=s=>s==='produk_jual'?'penjualan':(s==='produk_beli'?'pembelian':null),
       fkCol=s=>s==='produk_jual'?'idpenjualan':(s==='produk_beli'?'idpembelian':(s==='cicil'?'idjual':null)),
       NO_ADD=['penjualan','pembelian','produk_jual','produk_beli','cicil','ecer'],
-      EXEMPT=['back','menu','q','scan','dir','grid','closemsg','img-cls','scan-stop','more','reset-db','add','df-today','df-clear','login','reg','bypass','pwa-install','v-toko','v-dash','v-kas','v-shop','logout','refresh'];
+      EXEMPT=['back','menu','q','dir','grid','closemsg','more','reset-db','add','df-today','df-clear','login','reg','bypass','pwa-install','v-toko','v-dash','v-kas','v-shop','logout','refresh'];
 
 const setView=(v,idx=null)=>{
   if(dom.q&&dom.q.value.trim()!==''){dom.q.value='';K.page=1;}
@@ -216,7 +178,7 @@ const hasAccess=(k,s=K.cur)=>{
 };
 const addFooter=(a,txt,targetSheet=K.cur,extraAttr='')=>{if(hasAccess(a,targetSheet))dom.ft.insertAdjacentHTML('beforeend',`<button data-a="${esc(a)}" ${extraAttr}>${esc(txt)}</button> `);};
 const genId=()=>{const d=new Date();return String(d.getHours()).padStart(2,'0')+String(d.getMinutes()).padStart(2,'0')+Math.random().toString(36).slice(2,5).padEnd(3,'0');};
-const fmtNum=n=>N(n).toLocaleString('id-ID'),today=()=>new Date().toISOString().slice(0,10),openImg=src=>{if(isSafeUrl(src)){dom.it.src=src;dom.ib.hidden=false;render();}};
+const fmtNum=n=>N(n).toLocaleString('id-ID'),today=()=>new Date().toISOString().slice(0,10);
 const syncStockDelta=(sh,o,n)=>{
   if(!['produk_jual','produk_beli','ecer'].includes(sh))return;
   const m=sh==='produk_beli'?1:-1,p=r=>r&&{id:cV(r,sh,'idproduk'),q:N(cV(r,sh,'qty'))};
@@ -225,9 +187,7 @@ const syncStockDelta=(sh,o,n)=>{
     if(row&&cI('produk','stok')>-1)row[cI('produk','stok')]=String(N(row[cI('produk','stok')])+x.q*s);
   });
 };
-const msg=t=>{dom.msg.innerHTML='';dom.msg.hidden=!t;if(t)dom.msg.textContent=t;},
-      dl=(str,name,mime)=>{const u=URL.createObjectURL(new Blob([str],{type:mime})),a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{a.remove();URL.revokeObjectURL(u);},500);},
-      copyTxt=t=>{const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();};
+const msg=t=>{dom.msg.innerHTML='';dom.msg.hidden=!t;if(t)dom.msg.textContent=t;};
 
 const calcItems=(t,id)=>{
   const ch=childOf(t);if(!ch)return{raw:0,disc:0,cogs:0,pot:0,items:[]};
@@ -351,7 +311,7 @@ const renderDash=()=>{
   let ecQtyFil=0;
   K.db.ecer?.forEach(r=>{if(!isUserVisible(r,'ecer'))return;const q=N(cV(r,'ecer','qty')),net=Math.max(0,(q*N(cV(r,'ecer','hargajual')))-N(cV(r,'ecer','diskon')));jAll+=net;if(passFlt(cV(r,'ecer','user'),cV(r,'ecer','date'),cV(r,'ecer','catatan'))){jFil+=net;profFil+=(net-(q*N(cV(r,'ecer','hargabeli'))));ecQtyFil+=q;}});
   let bFil=0;
-  K.db.pembelian?.forEach(r=>{if(!isUserVisible(r,'pembelian'))return;if(passFlt(cV(r,'pembelian','user'),cV(r,'pembelian','date'),`${cV(r,'pembelian','idkontak')} ${cV(r,'pembelian','catatan')}`)){const{raw,disc}=calcItems('pembelian',r[0]);bFil+=Math.max(0,raw-disc-N(cV(r,'pembelian','diskon')));}});
+  K.db.pembelian?.forEach(r=>{if(!isUserVisible(r,'pembelian'))return;if(passFlt(cV(r,'pembelian','user'),cV(r,'pembelian','date'),`${cV(r,'pembelian','idkontak')} ${cV(r,'pembelian','catatan')}`)){const{raw,disc}=calcItems('pembelian',r[0]);bFil+=Math.max(0,raw-disc-N(cV(r,'pembelian','diskon')))}});
   let sStok=0,rCount=0,eMod=0,eJual=0;
   K.db.produk?.forEach(r=>{const s=N(cV(r,'produk','stok'));if(passFlt('','',`${cV(r,'produk','subkategori')} ${cV(r,'produk','kategori')}`)){sStok+=s;if(s>0){rCount++;eMod+=(s*N(cV(r,'produk','hargabeli')));eJual+=(s*N(cV(r,'produk','hargajual')));}}});
   const stMasuk=(K.db.produk_beli||[]).reduce((a,r)=>a+(isUserVisible(r,'produk_beli')?N(cV(r,'produk_beli','qty')):0),0),stKeluar=(K.db.produk_jual||[]).reduce((a,r)=>a+(isUserVisible(r,'produk_jual')?N(cV(r,'produk_jual','qty')):0),0)+ecQtyFil;
@@ -361,7 +321,7 @@ const renderDash=()=>{
 
 const renderForm=()=>{
   if(!K.u){msg('login');dom.fb.innerHTML='<input placeholder="user" autocomplete="off" data-f="user"><input type="password" placeholder="password" data-f="pass">';addFooter('login','login');addFooter('reg','register');addFooter('bypass','bypass');return;}
-  if(K.cur==='cms'&&K.v==='cms_detail'){msg('cms detail');const r=K.db.cms?.[K.idx]||[],gV=k=>cV(r,'cms',k),fotoSafe=isSafeUrl(gV('foto'))?gV('foto'):'';dom.fb.innerHTML=`<b>${esc(gV('judul')||'(tanpa judul)')}</b><small>${esc(gV('date'))} ${gV('user')?'| '+esc(gV('user')):''} ${gV('kategori')?'| '+esc(gV('kategori')):''} ${gV('status')?'| ['+esc(gV('status'))+']':''}</small><p>${esc(gV('konten'))}</p>${fotoSafe?`<img src="${esc(fotoSafe)}" data-img-open="${esc(fotoSafe)}" alt="cms">`:''}`;addFooter('back','<',K.cur);addFooter('edit-cms','edit',K.cur);if(fotoSafe||gV('file')||gV('konten'))addFooter('dl-cms-file','download',K.cur);renderNavFooters();return;}
+  if(K.cur==='cms'&&K.v==='cms_detail'){msg('cms detail');const r=K.db.cms?.[K.idx]||[],gV=k=>cV(r,'cms',k),fotoSafe=isSafeUrl(gV('foto'))?gV('foto'):'';dom.fb.innerHTML=`<b>${esc(gV('judul')||'(tanpa judul)')}</b><small>${esc(gV('date'))} ${gV('user')?'| '+esc(gV('user')):''} ${gV('kategori')?'| '+esc(gV('kategori')):''} ${gV('status')?'| ['+esc(gV('status'))+']':''}</small><p>${esc(gV('konten'))}</p>${fotoSafe?`<img src="${esc(fotoSafe)}" alt="cms">`:''}`;addFooter('back','<',K.cur);addFooter('edit-cms','edit',K.cur);renderNavFooters();return;}
   if(K.v==='bulksheet'){msg('bulksheet');dom.fb.innerHTML=`<textarea rows="10" placeholder="sheet:kolom,kolom">${esc(K.shs.map(s=>`${s}:${(K.cols[s]||[]).join(',')}`).join('\n'))}</textarea>`;addFooter('back','<',K.cur);addFooter('save-bulksheet','save',K.cur);renderNavFooters();return;}
   if(K.v==='toko'){msg('toko');dom.fb.innerHTML=`<input placeholder="name" value="${esc(K.store.name)}" data-cfg="name"><input placeholder="sub" value="${esc(K.store.sub)}" data-cfg="sub"><input placeholder="phone" value="${esc(K.store.phone)}" data-cfg="phone"><input placeholder="bank" value="${esc(K.store.bank)}" data-cfg="bank"><textarea placeholder="footer" data-cfg="footer">${esc(K.store.footer)}</textarea>`;addFooter('back','<',K.cur);addFooter('save-store','save',K.cur);renderNavFooters();return;}
   if(K.v==='schema'){msg(`schema ${K.cur}`);dom.fb.innerHTML=`<input placeholder="cols" value="${esc(cols().join(','))}" data-f="cols"><input placeholder="vis (list)" value="${esc(vis().join(','))}" data-f="vis"><input placeholder="form cols" value="${esc(fvis().join(','))}" data-f="form">`;addFooter('back','<',K.cur);addFooter('save-schema','save',K.cur);renderNavFooters();return;}
@@ -376,7 +336,7 @@ const renderForm=()=>{
     else if(K.idx===-1&&!val&&K.cur==='cms'&&col==='status')val='publish';
     const isLong=/catatan|alamat|uraian|konten|akses|hide|validasi/i.test(col),isDate=/date|tanggal/i.test(col),tag=isLong?'textarea':'input',typeAttr=isDate?'type="date"':'';
     dom.fb.insertAdjacentHTML('beforeend',`<${tag} ${typeAttr} placeholder="${esc(col)}" value="${esc(val)}" data-col="${esc(col)}">${isLong?esc(val):''}</${tag}>`);
-    updateFormThumb(dom.fb.querySelector(`[data-col="${qEsc(col)}"]`));
+    updateFormThumb(dom.fb.querySelector(`[data-col="${CSS.escape(col)}"]`));
   });
   K.savedFormState=null;
   if(K.idx===-1&&getRoleRules().includes('wajiblokasi')){
@@ -385,11 +345,9 @@ const renderForm=()=>{
   }
   addFooter('back','<',K.cur);addFooter('save-row','save',K.cur);
   if(isTrx())addFooter('trx-pick-kontak','kontak',K.cur);
-  formCols.forEach(col=>{const trgSh=resolveRef(col),val=(dom.fb.querySelector(`[data-col="${qEsc(col)}"]`)?.value||'').trim();if(trgSh&&trgSh!==K.cur&&K.shs.includes(trgSh)&&(K.db[trgSh]||[]).length>0&&val!=='')addFooter(`ref-${trgSh}`,`ref ${trgSh}`,K.cur,`data-ref-col="${esc(col)}"`);});
-  if(K.cur==='produk'&&K.idx===-1)addFooter('scan-prod','scan',K.cur);
+  formCols.forEach(col=>{const trgSh=resolveRef(col),val=(dom.fb.querySelector(`[data-col="${CSS.escape(col)}"]`)?.value||'').trim();if(trgSh&&trgSh!==K.cur&&K.shs.includes(trgSh)&&(K.db[trgSh]||[]).length>0&&val!=='')addFooter(`ref-${trgSh}`,`ref ${trgSh}`,K.cur,`data-ref-col="${esc(col)}"`);});
   if(formCols.some(k=>/foto/i.test(k))){addFooter('cam','kamera',K.cur);addFooter('pic','file',K.cur);}
   if(K.cur==='produk')addFooter('gimg','gimg',K.cur);
-  if(K.cur==='cms'){addFooter('up-cms-file','upload',K.cur);if(formCols.some(k=>/foto|file/i.test(k))&&(cV(row,K.cur,'foto')||cV(row,K.cur,'file')))addFooter('dl-cms-file','download',K.cur);}
   if(formCols.some(k=>/alamat|lokasi/i.test(k))){addFooter('gps','gps',K.cur);if(/(-?\d+\.\d+),\s*(-?\d+\.\d+)/.test(formCols.map(col=>row[c.indexOf(col)]||'').join(' ')))addFooter('navigasi','navigasi',K.cur);}
   if(K.cur==='produk'&&K.idx!==null&&K.idx>=0){addFooter('jual-prod','jual',K.cur);addFooter('beli-prod','beli',K.cur);addFooter('ecer-prod','ecer',K.cur);}
   if(['produk_jual','produk_beli','ecer'].includes(K.cur)&&row.length){const lk=cV(row,K.cur,'idproduk');if(lk){const pi=(K.db.produk||[]).findIndex(p=>S2(cV(p,'produk','idproduk')||p[0])===S2(lk));if(pi!==-1)K.prodIdx=pi;}}
@@ -418,7 +376,7 @@ const renderList=isBulkEdit=>{
       rowEl.textContent=r.join('|');
     }else{
       if(K.grid&&imgI!==-1&&isSafeUrl(r[imgI])){const im=document.createElement('img');im.src=r[imgI];im.alt='prod';im.onerror=()=>im.remove();rowEl.appendChild(im);rowEl.appendChild(document.createElement('br'));}
-      if(K.cur==='cms'&&cmsFotoI!==-1&&isSafeUrl(r[cmsFotoI])){const cTh=document.createElement('img');cTh.src=r[cmsFotoI];cTh.alt='cms';cTh.dataset.imgOpen=r[cmsFotoI];cTh.onerror=()=>cTh.remove();rowEl.appendChild(cTh);rowEl.appendChild(document.createTextNode(' '));}
+      if(K.cur==='cms'&&cmsFotoI!==-1&&isSafeUrl(r[cmsFotoI])){const cTh=document.createElement('img');cTh.src=r[cmsFotoI];cTh.alt='cms';cTh.onerror=()=>cTh.remove();rowEl.appendChild(cTh);rowEl.appendChild(document.createTextNode(' '));}
       rowEl.appendChild(document.createTextNode(eff.map(i=>{const val=r[i];if(!val)return'';if(K.cur==='cms'&&i===cmsFotoI)return'';return c[i]==='konten'?(String(val).replace(/\s+/g,' ').slice(0,50)+'...'):val;}).filter(Boolean).join(' ')||'-'));
     }
     dom.ls.appendChild(rowEl);
@@ -434,38 +392,12 @@ const renderList=isBulkEdit=>{
   if(limit<matched.length)addFooter('more','more',K.cur);
 };
 
-const renderNota=()=>{msg('nota');dom.tape.textContent=K.receiptRaw;addFooter('back','<',K.cur);addFooter('rawbt','rawbt',K.cur);addFooter('jpg','jpg',K.cur);addFooter('print','print',K.cur);addFooter('copy-nota','copy',K.cur);renderNavFooters();};
-const updateFormThumb=inp=>{if(!inp)return;const col=inp.dataset.col||'',val=(inp.value||'').trim();let th=dom.fb.querySelector(`img[data-thumb-col="${qEsc(col)}"]`);if(val&&(/foto/i.test(col)||isSafeUrl(val))){if(!th){th=document.createElement('img');th.dataset.thumbCol=col;th.alt='thumb';th.onerror=()=>th.remove();inp.insertAdjacentElement('afterend',th);}th.src=val;th.dataset.imgOpen=val;}else if(th)th.remove();};
-const stopScan=()=>{K.scanActive=false;if(K.scanStream){K.scanStream.getTracks().forEach(t=>t.stop());K.scanStream=null;}dom.scBox.hidden=true;render();};
-const startScan=trg=>{
-  K.scanTarget=trg||'q';if(!navigator.mediaDevices?.getUserMedia)return msg('kamera tidak didukung');
-  dom.scBox.hidden=false;K.scanActive=true;render();
-  navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}}).then(s=>{
-    if(!K.scanActive){s.getTracks().forEach(t=>t.stop());return;}
-    K.scanStream=s;dom.scVid.srcObject=s;dom.scVid.play();
-    const det=W.BarcodeDetector?new W.BarcodeDetector():null,loop=()=>{
-      if(dom.scBox.hidden||!K.scanActive)return;
-      if(det)det.detect(dom.scVid).then(b=>{
-        if(b.length){
-          const sc=String(b[0].rawValue||'').trim();stopScan();
-          if(K.scanTarget==='q'){dom.q.value=sc;K.page=1;render();}
-          else{
-            const inp=dom.fb.querySelector('[data-col="idproduk"]');
-            if(inp){inp.value=sc;const f=K.db.produk?.find(p=>S2(cV(p,'produk','idproduk')||p[0])===S2(sc));if(f)cols('produk').forEach((c,i)=>{const el=dom.fb.querySelector(`[data-col="${qEsc(c)}"]`);if(el)el.value=f[i]||'';});}
-          }
-        }else if(K.scanActive)requestAnimationFrame(loop);
-      }).catch(()=>{if(K.scanActive)requestAnimationFrame(loop);});
-      else if(K.scanActive)requestAnimationFrame(loop);
-    };
-    if(K.scanActive)requestAnimationFrame(loop);
-  }).catch(()=>{msg('kamera offline/diblokir');stopScan();});
-};
-
+const renderNota=()=>{msg('nota');dom.tape.textContent=K.receiptRaw;addFooter('back','<',K.cur);addFooter('rawbt','rawbt',K.cur);addFooter('jpg','jpg',K.cur);addFooter('print','print',K.cur);renderNavFooters();};
+const updateFormThumb=inp=>{if(!inp)return;const col=inp.dataset.col||'',val=(inp.value||'').trim();let th=dom.fb.querySelector(`img[data-thumb-col="${CSS.escape(col)}"]`);if(val&&(/foto/i.test(col)||isSafeUrl(val))){if(!th){th=document.createElement('img');th.dataset.thumbCol=col;th.alt='thumb';th.onerror=()=>th.remove();inp.insertAdjacentElement('afterend',th);}th.src=val;}else if(th)th.remove();};
 const persist=()=>{try{L.setItem('apex',JSON.stringify({cur:K.cur,u:K.u,store:K.store,shs:K.shs,cols:K.cols,vis:K.vis,fvis:K.fvis,db:K.db,parent:K.parent,grid:K.grid,df:K.df}));}catch{}};
 
 const render=()=>{
   dom.act.value='';dom.fb.innerHTML=dom.ft.innerHTML=dom.db.innerHTML=dom.ls.innerHTML='';document.body.dataset.grid=K.grid?'1':'0';
-  if(!dom.scBox.hidden)addFooter('scan-stop','x');if(!dom.ib.hidden)addFooter('img-cls','tutup gambar');
   if(!K.u){dom.h.hidden=dom.tools.hidden=dom.db.hidden=dom.bn.hidden=dom.ls.hidden=true;dom.fb.hidden=false;renderForm();return;}
   const isF=['toko','schema','bulksheet','cms_detail'].includes(K.v)||K.idx!==null,m=K.v==='menu'?'menu':K.v==='dash'?'dash':K.v==='nota'?'nota':isF?'form':K.v==='edit'?'edit':'list';
   dom.h.hidden=m==='form';dom.tools.hidden=m!=='list'&&m!=='edit';dom.fb.hidden=m!=='form';dom.db.hidden=m!=='dash';dom.bn.hidden=m!=='nota';dom.ls.hidden=m!=='list'&&m!=='edit';
@@ -491,32 +423,161 @@ const actions={
   },
   bypass:()=>{if(!K.db.users?.length)K.db.users=[['admin','admin','admin']];K.u=L.u=K.db.users[0]?.[0]||'admin';persist();syn(true);setView('dash',null);msg();render();},
   back:()=>{
-    if(!dom.scBox.hidden)return stopScan();if(!dom.ib.hidden)return actions['img-cls']();if(K.v==='menu'){dom.q.value='';K.v='dash';return render();}
+    if(K.v==='menu'){dom.q.value='';K.v='dash';return render();}
     const inForm=['form','toko','schema','bulksheet','cms_detail','edit'].includes(K.v)||K.idx!==null;
     K.idx=null;K.prefill=null;K.prodIdx=null;K.conf=null;K.refTargetInp=null;K.savedFormState=null;
     if(inForm){while(K.hist.length){const prev=K.hist.pop();if(prev&&!['form','toko','schema','bulksheet','cms_detail','edit'].includes(prev.v)&&prev.idx===null){K.cur=prev.cur||K.cur;K.v=prev.v||'list';K.parent=prev.parent||null;K.readyOnly=Boolean(prev.readyOnly);return render();}}K.v=K.cur?'list':'dash';return render();}
     if(K.hist.length){const p=K.hist.pop();K.cur=p.cur||K.cur;K.v=p.v||'dash';K.idx=p.idx!=null?p.idx:null;K.parent=p.parent||null;K.readyOnly=Boolean(p.readyOnly);return render();}
     if(K.v!=='dash'){K.v='dash';K.idx=null;K.readyOnly=false;return render();}
   },
-  menu:()=>{if(!dom.scBox.hidden)stopScan();if(K.v==='menu'){dom.q.value='';K.v='dash';}else{K.v='menu';dom.q.value='';}render();},
+  menu:()=>{if(K.v==='menu'){dom.q.value='';K.v='dash';}else{K.v='menu';dom.q.value='';}render();},
   refresh:async()=>{
-    msg('syncing dataset & tables...');
-    await req({a:'ensure_all', tn:K.shs, cols:K.cols, gasUrl:HARD.gasUrl});
-    const muts = await ga('mut');
-    await req({
-      a: 'push',
-      m: typeof pack === 'function' ? pack(muts) : muts,
-      tn: K.shs,
-      db: K.db,
-      cols: K.cols,
-      shs: K.shs,
-      gasUrl: HARD.gasUrl
-    });
-    if (muts.length) await rm('mut', muts.map(x => x.i));
-    await syn(true);
-    await testConn();
+    msg('syncing...');
+    const ok = await syn(true);
+    msg(ok ? 'SYNC: OK' : 'SYNC: OFFLINE');
+    setTimeout(()=>msg(),2000);
     render();
   },
+  'df-today':()=>{K.df.from=K.df.to=today();persist();render();},
+  'df-clear':()=>{K.df={u:'',from:'',to:'',kat:''};persist();render();},
+  'v-dash':()=>{K.prefill=K.prodIdx=null;setView('dash',null);render();},
+  'v-toko':()=>{setView('toko',null);render();},
+  'v-kas':()=>{if(!K.shs.includes('kas'))K.shs.push('kas');K.cur='kas';K.prefill=K.prodIdx=null;setView('form',-1);render();},
+  'v-shop':()=>{K.cur='produk';K.grid=true;K.prefill=K.prodIdx=null;setView('list',null);K.readyOnly=false;render();},
+  'v-jual':()=>{const op=getOpenTrx('penjualan');if(op)K.parent={type:'penjualan',id:op.id,open:true};K.cur='produk_jual';K.grid=false;setView('list',null);render();},
+  'v-beli':()=>{const op=getOpenTrx('pembelian');if(op)K.parent={type:'pembelian',id:op.id,open:true};K.cur='produk_beli';K.grid=false;setView('list',null);render();},
+  'v-selesai':()=>{if(!K.parent)return;const fi=(K.db[K.parent.type]||[]).findIndex(r=>S2(r[0])===S2(K.parent.id));K.cur=K.parent.type;setView('form',fi!==-1?fi:null);render();},
+  'clear-items':()=>{
+    if(K.conf!=='clear-items'){K.conf='clear-items';render();return;}
+    if(!K.parent)return;
+    const pType=K.parent.type,pid=S2(K.parent.id),ch=childOf(pType),fkI=cI(ch,fkCol(ch));
+    if(fkI!==-1){(K.db[ch]||[]).filter(r=>S2(r[fkI])===pid).forEach(r=>{syncStockDelta(ch,r,null);save(r,ch,0);});K.db[ch]=(K.db[ch]||[]).filter(r=>S2(r[fkI])!==pid);}
+    if(K.db[pType]){const pRow=K.db[pType].find(r=>S2(r[0])===pid);if(pRow)save(pRow,pType,0);K.db[pType]=K.db[pType].filter(r=>S2(r[0])!==pid);}
+    if(pType==='penjualan'&&K.db.cicil){K.db.cicil.filter(c=>S2(cV(c,'cicil','idjual'))===pid).forEach(c=>save(c,'cicil',0));K.db.cicil=K.db.cicil.filter(c=>S2(cV(c,'cicil','idjual'))!==pid);}
+    K.parent=K.conf=null;persist();syn(true);K.cur='produk';setView('list',null);render();
+  },
+  'add-cart-item':()=>{K.prefill=null;K.prodIdx=null;setView('form',-1);render();},
+  'edit-cms':()=>{setView('form',K.idx);render();},
+  nav:b=>{K.cur=b.dataset.s;setView('list',null);K.page=1;K.readyOnly=b.dataset.slice==='ready';render();},
+  add:()=>{if(!NO_ADD.includes(K.cur)&&hasAccess('add',K.cur)){setView('form',-1);render();}},
+  'edit-prod':()=>{if(K.prodIdx!==null){K.cur='produk';const pi=K.prodIdx;K.prodIdx=K.prefill=null;setView('form',pi);render();}},
+  'jual-prod':()=>{if(K.idx>=0){const p=K.db.produk[K.idx]||[];if(!K.shs.includes('produk_jual'))K.shs.push('produk_jual');K.cur='produk_jual';K.prefill={idproduk:p[0],namaproduk:p[3],hargabeli:p[4],hargajual:p[5],qty:'1',diskon:'',catatan:''};K.prodIdx=K.idx;setView('form',-1);render();}},
+  'beli-prod':()=>{if(K.idx>=0){const p=K.db.produk[K.idx]||[];if(!K.shs.includes('produk_beli'))K.shs.push('produk_beli');K.cur='produk_beli';K.prefill={idproduk:p[0],namaproduk:p[3],hargabeli:p[4],hargajual:p[5],qty:'1'};K.prodIdx=K.idx;setView('form',-1);render();}},
+  'ecer-prod':()=>{if(K.idx>=0){const p=K.db.produk[K.idx]||[];if(!K.shs.includes('ecer'))K.shs.push('ecer');K.cur='ecer';K.prefill={idproduk:p[0],namaproduk:p[3],hargabeli:p[4],hargajual:p[5],qty:'1',diskon:'',catatan:''};K.prodIdx=K.idx;setView('form',-1);render();}},
+  'save-bulksheet':()=>{
+    const val=dom.fb.querySelector('textarea')?.value||'',updated=[];
+    val.split(/\r?\n/).filter(Boolean).forEach(l=>{
+      const p=l.split(':'),n=S2(p[0]);if(!n||updated.includes(n))return;updated.push(n);K.db[n]=K.db[n]||[];
+      const colsList=p.slice(1).join(':').split(',').map(S2).filter(Boolean);
+      K.cols[n]=colsList.length?colsList:(K.cols[n]||[]);if(!K.vis[n]?.length)K.vis[n]=K.cols[n].slice(0,2);
+    });
+    if(!updated.length)return msg('min 1 sheet');
+    K.shs.forEach(s=>{if(!updated.includes(s)){delete K.db[s];delete K.cols[s];delete K.vis[s];delete K.fvis[s];}});
+    K.shs=updated;if(!K.shs.includes(K.cur))K.cur=K.shs[0];persist();syn(true);setView('list',null);render();
+  },
+  'save-row':()=>{
+    if(K.writing)return;K.writing=true;
+    try{
+      const c=cols(),oldRow=(K.idx>=0&&K.db[K.cur][K.idx])?K.db[K.cur][K.idx].slice():null,row=oldRow?oldRow.slice(0,c.length):new Array(c.length).fill('');
+      while(row.length<c.length)row.push('');
+      dom.fb.querySelectorAll('[data-col]').forEach(inp=>{const ci=c.indexOf(inp.dataset.col);if(ci!==-1)row[ci]=inp.value.trim();});
+      const rules=getRoleRules(),valOf=k=>row[c.indexOf(k)]||'';
+      if(rules.includes('wajiblokasi')&&c.some(k=>/lokasi|alamat/i.test(k))){if(!valOf(c.find(k=>/lokasi|alamat/i.test(k))))return msg('wajib lokasi');}
+      if(rules.includes('wajibfoto')&&c.some(k=>/foto/i.test(k))){const fv=valOf(c.find(k=>/foto/i.test(k)));if(!fv||!isSafeUrl(fv))return msg('wajib foto');}
+      if(rules.includes('wajibkontak')&&c.includes('idkontak')&&!valOf('idkontak'))return msg('wajib idkontak');
+      if(rules.includes('wajibabsen')&&['penjualan','kas','pembelian'].includes(K.cur)&&!(K.db.absen||[]).some(a=>S2(cV(a,'absen','user'))===S2(K.u||'admin')&&cV(a,'absen','date')===today()))return msg('wajib absen hari ini');
+      if(rules.includes('wajibstok')&&['produk_jual','ecer'].includes(K.cur)){
+        const pRow=K.db.produk?.find(p=>S2(p[0])===S2(valOf('idproduk'))),stkCur=pRow?N(cV(pRow,'produk','stok')):0;
+        if(pRow&&N(valOf('qty'))>stkCur)return msg('stok tidak cukup');
+      }
+      const pType=parentOf(K.cur);
+      if(pType&&K.idx===-1){
+        if(!K.parent||K.parent.type!==pType)K.parent=getOpenTrx(pType)||{type:pType,id:genId(),open:true};
+        const pCols=cols(pType);
+        if(!(K.db[pType]||[]).some(r=>S2(r[0])===S2(K.parent.id))){
+          const newP=new Array(pCols.length).fill('');newP[0]=K.parent.id;
+          pCols.forEach((col,i)=>{if(/date|tanggal/i.test(col))newP[i]=today();else if(col==='user')newP[i]=K.u||'admin';else if(col==='status')newP[i]='draft';});
+          (K.db[pType]||[]).push(newP);save(newP,pType,2);
+        }
+        const fkI=c.indexOf(fkCol(K.cur));if(fkI!==-1)row[fkI]=K.parent.id;
+      }
+      if(!row[0])row[0]=genId();
+      if(isTrx()){
+        const sI=cI(K.cur,'status');
+        if(sI===-1||row[sI]!=='revisi'){
+          const{raw,disc}=calcItems(K.cur,row[0]),net=Math.max(0,raw-disc-N(cV(row,K.cur,'diskon'))),paid=N(cV(row,K.cur,'bayar')),cicil=K.cur==='penjualan'?(K.db.cicil||[]).reduce((a,c)=>a+(S2(cV(c,'cicil','idjual'))===S2(row[0])?N(cV(c,'cicil','jumlah')):0),0):0,kId=cV(row,K.cur,'idkontak'),totPaid=paid+cicil;
+          if(sI>-1){if(net<=0)row[sI]='draft';else if(totPaid>=net)row[sI]='lunas';else if(kId)row[sI]='piutang';else row[sI]='draft';}
+          if((row[sI]==='piutang'||(net>0&&totPaid<net))&&cI(K.cur,'idkontak')!==-1&&!kId)return msg('piutang wajib idkontak');
+        }
+      }
+      if(K.idx===-1){(K.db[K.cur]=K.db[K.cur]||[]).push(row);syncStockDelta(K.cur,null,row);save(row,K.cur,2);}
+      else if(K.idx>=0){K.db[K.cur][K.idx]=row;syncStockDelta(K.cur,oldRow,row);save(row,K.cur,1);}
+      persist();
+      if(pType&&K.parent?.id)syncTrx(pType);
+      if(isTrx()&&row[0]){syncTrx(K.cur);const st=S2(cV(row,K.cur,'status'));if(st!=='draft'&&st!=='revisi')K.parent=null;}
+      if(K.cur==='cicil'){const cJual=cV(row,'cicil','idjual');if(cJual)syncTrx('penjualan');}
+      const justTrxId=isTrx()?row[0]:null,wasPenjualan=K.cur==='penjualan';
+      K.prefill=K.conf=K.prodIdx=K.savedFormState=null;
+      if(wasPenjualan&&justTrxId){K.receiptRaw=formatNota(justTrxId);setView('nota',null);render();}
+      else if(pType){K.cur='produk';K.grid=true;setView('list',null);render();}
+      else{setView('list',null);render();}
+    }finally{K.writing=false;}
+  },
+  'del-row':()=>{
+    if(K.conf!=='del'){K.conf='del';render();return;}
+    if(K.idx==null||K.idx<0)return;
+    const pType=parentOf(K.cur),pid=pType?(K.db[K.cur][K.idx]?.[cI(K.cur,fkCol(K.cur))]||K.parent?.id):null,id=K.db[K.cur][K.idx]?.[0],delCicilJual=K.cur==='cicil'?cV(K.db[K.cur][K.idx],'cicil','idjual'):null,rem=K.db[K.cur].splice(K.idx,1)[0];
+    syncStockDelta(K.cur,rem,null);save(rem,K.cur,0);
+    if(isTrx()&&id){
+      const ch=childOf(K.cur),fkI=cI(ch,fkCol(ch));
+      if(fkI!==-1){(K.db[ch]||[]).filter(r=>S2(r[fkI])===S2(id)).forEach(r=>{syncStockDelta(ch,r,null);save(r,ch,0);});K.db[ch]=K.db[ch].filter(r=>S2(r[fkI])!==id);}
+      if(K.cur==='penjualan'&&K.db.cicil){K.db.cicil.filter(c=>S2(cV(c,'cicil','idjual'))===S2(id)).forEach(c=>save(c,'cicil',0));K.db.cicil=K.db.cicil.filter(c=>S2(cV(c,'cicil','idjual'))!==id);}
+    }
+    if(K.cur==='kontak'&&id){['penjualan','pembelian','cicil'].forEach(sh=>{const ki=cI(sh,'idkontak');if(ki!==-1&&K.db[sh]){K.db[sh].forEach(r=>{if(S2(r[ki])===S2(id)){r[ki]='';save(r,sh,1);}});}});}
+    persist();if(pType&&pid)syncTrx(pType);if(delCicilJual)syncTrx('penjualan');setView('list',null);render();
+  },
+  'dup-row':()=>{if(K.idx>=0){const old=(K.db[K.cur][K.idx]||[]).slice(),c=cols();K.prefill={};c.forEach((col,i)=>{K.prefill[col]=old[i]||'';});K.prefill[c[0]]=genId();setView('form',-1);render();}},
+  'trx-pick-kontak':()=>{if(!K.shs.includes('kontak'))return;const curState={};dom.fb.querySelectorAll('[data-col]').forEach(inp=>{curState[inp.dataset.col]=inp.value;});K.savedFormState=curState;K.refTargetInp='idkontak';K.cur='kontak';setView('list',null);render();},
+  'trx-set-kontak':()=>{
+    const pType=K.parent?.type||'penjualan',op=getOpenTrx(pType);if(!op)return msg('tidak ada transaksi');
+    const r=K.db.kontak?.[K.idx]||[],kId=cV(r,'kontak','idkontak')||r[0]||'';if(!kId)return msg('idkontak kosong');
+    const trgRow=K.db[pType]?.find(x=>S2(x[0])===S2(op.id));
+    if(trgRow&&cI(pType,'idkontak')!==-1){trgRow[cI(pType,'idkontak')]=kId;save(trgRow,pType,1);}
+    persist();if(op.id)syncTrx(pType);K.cur=pType;setView('form',(K.db[pType]||[]).indexOf(trgRow));render();
+  },
+  'pay-pas':()=>{
+    const r=(K.idx!==null&&K.idx>=0)?K.db[K.cur][K.idx]:null,pid=r?r[0]:(dom.fb.querySelector(`[data-col="${CSS.escape(cols()[0])}"]`)?.value||''),bInp=dom.fb.querySelector('[data-col="bayar"]');
+    if(bInp&&pid){const dVal=N(dom.fb.querySelector('[data-col="diskon"]')?.value||(r?cV(r,K.cur,'diskon'):0)),{raw,disc}=calcItems(K.cur,pid);bInp.value=String(Math.max(0,raw-disc-dVal));}
+  },
+  revisi:()=>{if(K.idx>=0){const r=K.db[K.cur][K.idx],pid=r?.[0];if(pid){K.parent={type:K.cur,id:pid,open:true};if(cI(K.cur,'status')!==-1){r[cI(K.cur,'status')]='revisi';save(r,K.cur,1);persist();}K.cur=childOf(K.cur);setView('list',null);render();}}},
+  cicil:()=>{
+    if(K.idx>=0){
+      const r=K.db[K.cur][K.idx],pid=r?.[0];
+      if(pid){
+        if(!K.shs.includes('cicil'))K.shs.push('cicil');
+        const{raw,disc}=calcItems('penjualan',pid),net=Math.max(0,raw-disc-N(cV(r,'penjualan','diskon'))),paid=N(cV(r,'penjualan','bayar'))+(K.db.cicil||[]).reduce((a,c)=>a+(S2(cV(c,'cicil','idjual'))===S2(pid)?N(cV(c,'cicil','jumlah')):0),0),remDebt=Math.max(0,net-paid);
+        K.cur='cicil';K.prefill={idjual:pid,idkontak:cV(r,'penjualan','idkontak'),date:today(),user:K.u||'admin',jumlah:remDebt>0?String(remDebt):''};setView('form',-1);render();
+      }
+    }
+  },
+  'trx-rincian':()=>{if(K.idx>=0){const pid=K.db[K.cur][K.idx]?.[0];if(pid){K.parent={type:K.cur,id:pid,open:true};K.cur=childOf(K.cur);setView('list',null);render();}}},
+  'show-nota':()=>{const pid=(K.cur==='penjualan'&&K.idx>=0)?K.db.penjualan[K.idx]?.[0]:(K.parent?.type==='penjualan'?K.parent.id:K.db.penjualan?.[0]?.[0]);if(!pid)return;K.receiptRaw=formatNota(pid);setView('nota',null);render();},
+  rawbt:()=>{if(!K.receiptRaw)return;const txt=K.receiptRaw.trim()+'\r\n\r\n\r\n',u=encodeURIComponent(txt);if(/Android/i.test(navigator.userAgent))W.location.href=`intent:${u}#Intent;scheme=rawbt;package=ru.a402d.rawbtprinter;end;`;else W.location.href=`rawbt:${u}`;},
+  jpg:()=>{
+    if(!K.receiptRaw)return;
+    const lines=K.receiptRaw.split(/\r?\n/),lh=18,fs=13,fontStr=`${fs}px monospace`,mCan=document.createElement('canvas'),mCtx=mCan.getContext('2d');
+    mCtx.font=fontStr;let maxW=0;lines.forEach(l=>{const w=mCtx.measureText(l).width;if(w>maxW)maxW=w;});
+    const w=Math.ceil(maxW)||280,h=lines.length*lh+4,can=document.createElement('canvas');can.width=w;can.height=h;
+    const ctx=can.getContext('2d');ctx.fillStyle='#ffffff';ctx.fillRect(0,0,w,h);ctx.fillStyle='#000000';ctx.font=fontStr;ctx.textBaseline='top';
+    lines.forEach((l,i)=>ctx.fillText(l,0,i*lh+2));
+    can.toBlob(blob=>{
+      if(!blob)return msg('gagal render jpg');
+      const dlImg=()=>{const u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=`nota_${Date.now()}.png`;document.body.appendChild(a);a.click();setTimeout(()=>{a.remove();URL.revokeObjectURL(u);},500);msg('jpg diunduh!');};
+      try{if(navigator.clipboard&&W.ClipboardItem)navigator.clipboard.write([new ClipboardItem({'image/png':blob})]).then(()=>msg('jpg tersalin!')).catch(()=>dlImg());else dlImg();}catch{dlImg();}
+    },'image/png');
+  },
+  print:()=>W.print(),
+  'save-store':()=>{dom.fb.querySelectorAll('[data-cfg]').forEach(i=>K.store[i.dataset.cfg]=i.value.trim());persist();syn(true);setView('list',null);render();},
   'reset-db':async()=>{
     if(K.conf!=='reset-db'){K.conf='reset-db';return msg('kosongkan db & cache? klik lagi');}
     K.conf=null;
@@ -540,19 +601,45 @@ const actions={
     render();
 
     msg('db & cache bersih. sync...');
-    await syn(true);
-    await testConn();
+    const ok = await syn(true);
+    msg(ok ? 'SYNC: OK' : 'SYNC: OFFLINE');
+    setTimeout(()=>msg(),2000);
     render();
   },
-  f:el=>{
-    const file=el.files?.[0];if(!file)return;el.value='';const rd=new FileReader();
-    rd.onload=e=>{
-      const ls=(e.target.result||'').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);if(!ls.length)return msg('empty');
-      const c=cols(),res=[];
-      ls.slice(1).forEach(l=>{const r=l.split('\t');if(r.some(v=>v.trim()!=='')){while(r.length<c.length)r.push('');const rowItem=r.slice(0,c.length);res.push(rowItem);save(rowItem,K.cur,2);}});
-      if(res.length){K.db[K.cur]=res;persist();syn(true);render();}else msg('data kosong');
-    };
-    rd.readAsText(file);
+  'pwa-install':()=>{if(K.pwaEvent){K.pwaEvent.prompt();K.pwaEvent.userChoice.then(()=>{K.pwaEvent=null;render();});}},
+  'save-schema':()=>{
+    const nc=(dom.fb.querySelector('[data-f="cols"]')?.value||'').split(',').map(S2).filter(Boolean);
+    if(nc.length){
+      K.cols[K.cur]=nc;K.vis[K.cur]=(dom.fb.querySelector('[data-f="vis"]')?.value||'').split(',').map(S2).filter(x=>nc.includes(x))||nc.slice(0,2);
+      K.fvis[K.cur]=(dom.fb.querySelector('[data-f="form"]')?.value||'').split(',').map(S2).filter(x=>nc.includes(x))||nc.slice();
+      (K.db[K.cur]||[]).forEach(r=>{if(r.length>nc.length)r.length=nc.length;while(r.length<nc.length)r.push('');});
+      persist();syn(true);
+    }
+    setView('list',null);render();
+  },
+  'save-bulk':()=>{
+    const cLen=cols().length;
+    dom.ls.querySelectorAll('[data-idx]').forEach(div=>{
+      const idx=parseInt(div.dataset.idx,10);
+      if(!isNaN(idx)&&K.db[K.cur][idx]){const pts=div.textContent.split('|').map(s=>s.trim());while(pts.length<cLen)pts.push('');const row=pts.slice(0,cLen);K.db[K.cur][idx]=row;save(row,K.cur,1);}
+    });
+    persist();syn(true);setView('list',null);render();
+  },
+  grid:()=>{K.grid=!K.grid;render();},
+  dir:()=>{K.dir=-K.dir;K.page=1;render();},
+  more:()=>{K.page++;render();},
+  logout:()=>{K.u=L.u='';K.hist=[];K.readyOnly=false;persist();render();},
+  cam:()=>dom.fCam.click(),pic:()=>dom.fImg.click(),
+  gimg:()=>{const q=dom.fb.querySelector('[data-col="namaproduk"]')?.value||dom.fb.querySelector('[data-col="nama"]')?.value||dom.q.value||'';if(q)W.open('https://www.google.com/search?tbm=isch&q='+encodeURIComponent(q),'_blank','noopener,noreferrer');else msg('nama kosong');},
+  navigasi:()=>{const loc=(Array.from(dom.fb.querySelectorAll('[data-col]')).find(i=>/alamat|lokasi/i.test(i.dataset.col))?.value||'').trim();if(loc){if(/Android|iPhone|iPad/i.test(navigator.userAgent))W.location.href=`geo:${loc}?q=${encodeURIComponent(loc)}`;else W.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(loc)}`,'_blank','noopener,noreferrer');}else msg('koordinat kosong');},
+  gps:()=>{const trg=Array.from(dom.fb.querySelectorAll('[data-col]')).find(i=>/alamat|lokasi/i.test(i.dataset.col));if(!trg||!navigator.geolocation)return msg(!trg?'kolom kosong':'no gps');navigator.geolocation.getCurrentPosition(p=>{trg.value=`${p.coords.latitude.toFixed(6)},${p.coords.longitude.toFixed(6)}`;},()=>msg('gps err'),{enableHighAccuracy:true,timeout:5000});},
+  'sh-sel':el=>{K.cur=el.value;K.parent=K.prefill=K.prodIdx=K.savedFormState=null;setView('list',null);K.page=1;K.readyOnly=false;render();},
+  'st-sel':el=>{K.sort=parseInt(el.value,10)||0;K.page=1;render();},
+  'act-sel':el=>{
+    const a=el.value;el.value='';if(!a)return;
+    if(a==='edit'){setView(K.v==='edit'?'list':'edit',null);render();}
+    else if(a==='bulksheet'||a==='schema'){setView(a,null);render();}
+    else if(a==='clear'){if(K.conf!=='clear'){K.conf='clear';msg(`clear ${K.cur}?`);return;}K.db[K.cur].forEach(r=>save(r,K.cur,0));K.db[K.cur]=[];K.conf=null;persist();syn(true);render();}
   }
 };
 
@@ -562,15 +649,13 @@ document.addEventListener('click',e=>{
   if(b){
     const a=b.dataset.a;
     if(a.startsWith('ref-')){
-      const trg=a.replace('ref-',''),cName=b.dataset.refCol||'',val=cName?(dom.fb.querySelector(`[data-col="${qEsc(cName)}"]`)?.value||''):'',curState={};
+      const trg=a.replace('ref-',''),cName=b.dataset.refCol||'',val=cName?(dom.fb.querySelector(`[data-col="${CSS.escape(cName)}"]`)?.value||''):'',curState={};
       dom.fb.querySelectorAll('[data-col]').forEach(inp=>{curState[inp.dataset.col]=inp.value;});
       K.savedFormState=curState;K.refTargetInp=cName;K.cur=trg;dom.q.value=val.trim();K.page=1;setView('list',null);return render();
     }
     if(!['del-row','clear-items','act-sel','reset-db'].includes(a)&&K.conf){K.conf=null;msg();}
     return actions[a]?.(b,e);
   }
-  const imgTrg=e.target.closest('[data-img-open]');
-  if(imgTrg){e.stopPropagation();return openImg(imgTrg.dataset.imgOpen);}
   const r=e.target.closest('#list>[data-idx]');
   if(r&&K.v==='list'&&K.idx===null){
     const idx=parseInt(r.dataset.idx,10);
@@ -592,13 +677,13 @@ document.addEventListener('input',e=>{
   if(e.target.id==='q'){if(K.v==='menu'){const qm=S2(e.target.value);Array.from(dom.ft.querySelectorAll('button[data-a]')).forEach(btn=>{btn.hidden=qm&&!btn.textContent.toLowerCase().includes(qm);});}else{K.page=1;render();}return;}
   if(e.target.dataset.df){
     const k=e.target.dataset.df;K.df[k]=e.target.value;persist();const pos=e.target.selectionStart;render();
-    const next=dom.db.querySelector(`[data-df="${qEsc(k)}"]`);if(next){next.focus();if(typeof pos==='number')try{next.setSelectionRange(pos,pos);}catch{}}
+    const next=dom.db.querySelector(`[data-df="${CSS.escape(k)}"]`);if(next){next.focus();if(typeof pos==='number')try{next.setSelectionRange(pos,pos);}catch{}}
     return;
   }
   if(e.target.dataset.col){
     const col=e.target.dataset.col,val=(e.target.value||'').trim(),trgSh=resolveRef(col);
     updateFormThumb(e.target);
-    if(trgSh){const refBtn=dom.ft.querySelector(`[data-a="ref-${qEsc(trgSh)}"]`);if(val===''&&refBtn)refBtn.remove();else if(val!==''&&!refBtn&&K.shs.includes(trgSh)&&(K.db[trgSh]||[]).length>0)addFooter(`ref-${trgSh}`,`ref ${trgSh}`,K.cur,`data-ref-col="${esc(col)}"`);}
+    if(trgSh){const refBtn=dom.ft.querySelector(`[data-a="ref-${CSS.escape(trgSh)}"]`);if(val===''&&refBtn)refBtn.remove();else if(val!==''&&!refBtn&&K.shs.includes(trgSh)&&(K.db[trgSh]||[]).length>0)addFooter(`ref-${trgSh}`,`ref ${trgSh}`,K.cur,`data-ref-col="${esc(col)}"`);}
     if(['idproduk','namaproduk'].includes(col)&&K.cur!=='produk'){
       const q=S2(val);if(q){const f=K.db.produk?.find(p=>S2(cV(p,'produk','idproduk')||p[0])===q||S2(cV(p,'produk','namaproduk'))===q);if(f)dom.fb.querySelectorAll('[data-col]').forEach(inp=>{const fi=cI('produk',inp.dataset.col);if(fi!==-1)inp.value=f[fi]||'';});}
     }
@@ -619,7 +704,7 @@ document.addEventListener('keydown',e=>{
   if(e.key==='Enter'&&e.target.tagName!=='TEXTAREA'&&dom.fb.contains(e.target)){
     e.preventDefault();if(K.writing)return;
     if(!K.u)actions.login();else if(['bulksheet','toko','schema'].includes(K.v))actions[`save-${K.v}`]();else actions['save-row']();
-  }else if(e.key==='Escape'){if(!dom.scBox.hidden)stopScan();else if(!dom.ib.hidden)actions['img-cls']();else actions.back();}
+  }else if(e.key==='Escape')actions.back();
 });
 
 W.addEventListener('beforeinstallprompt',e=>{e.preventDefault();K.pwaEvent=e;if(K.v==='menu'||K.v==='dash')render();});
@@ -628,6 +713,7 @@ if('serviceWorker' in navigator&&(W.location.protocol.startsWith('http')||W.loca
 }
 W.addEventListener('online',()=>syn(true));
 
+// Inisialisasi Aplikasi
 (()=>{
   try{
     const d=JSON.parse(L.getItem('apex')||'null');

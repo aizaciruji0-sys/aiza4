@@ -10,15 +10,14 @@
   <link rel="manifest" href="manifest.json"><link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header id="h"><button data-a="menu">≡</button> <input type="search" id="q" placeholder="Cari..." autocomplete="off"> <button data-a="refresh" title="Hard Refresh &amp; Sync Push Pull">⟳</button> <button data-a="scan">|</button> <button data-a="add">add</button></header>
+  <header id="h"><button data-a="menu">≡</button> <input type="search" id="q" placeholder="Cari..." autocomplete="off"> <button data-a="refresh" title="Hard Refresh &amp; Sync Push Pull">⟳</button> <button data-a="add">add</button></header>
   <p id="msg" data-a="closemsg" hidden></p>
   <main id="main">
-    <div id="scan-box" hidden><video id="scan-vid" playsinline></video></div>
-    <div id="tools"><select id="sh-sel" data-a="sh-sel"></select> <select id="st-sel" data-a="st-sel"></select> <button data-a="dir">^</button> <button data-a="grid">#</button> <select id="act-sel" data-a="act-sel"><option value="" disabled selected>act</option><option value="edit">edit</option><option value="bulksheet">bulksheet</option><option value="schema">schema</option><option value="clear">clear</option><option value="imp">imp</option><option value="tsv">tsv</option></select></div>
+    <div id="tools"><select id="sh-sel" data-a="sh-sel"></select> <select id="st-sel" data-a="st-sel"></select> <button data-a="dir">^</button> <button data-a="grid">#</button> <select id="act-sel" data-a="act-sel"><option value="" disabled selected>act</option><option value="edit">edit</option><option value="bulksheet">bulksheet</option><option value="schema">schema</option><option value="clear">clear</option></select></div>
     <div id="box-form"></div><div id="box-dash"></div><div id="box-nota"><pre id="tape"></pre></div><div id="list"></div>
   </main>
-  <footer id="ft"></footer><div id="img-box" hidden><img id="img-trg" alt="preview"></div>
-  <input id="f" type="file" data-a="f" accept=".tsv" hidden><input id="f-cam" type="file" accept="image/*" capture="environment" hidden><input id="f-img" type="file" accept="image/*" hidden><input id="f-doc" type="file" hidden>
+  <footer id="ft"></footer>
+  <input id="f-cam" type="file" accept="image/*" capture="environment" hidden><input id="f-img" type="file" accept="image/*" hidden><input id="f-doc" type="file" hidden>
   <script src="config.js"></script><script src="app.js"></script>
 </body>
 </html>
