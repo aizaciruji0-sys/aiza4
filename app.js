@@ -734,19 +734,34 @@ const actions={
   'copy-nota':()=>{copyTxt(K.receiptRaw);msg('nota tersalin');},
   'save-store':()=>{dom.fb.querySelectorAll('[data-cfg]').forEach(i=>K.store[i.dataset.cfg]=i.value.trim());persist();syn(true);setView('list',null);render();},
   
-  // RESET DB MURNI OFFLINE (SKEMA TETAP TERJAGA)
+  // RESET DB MURNI OFFLINE + KOSONGKAN SELURUH CACHE
   'reset-db':async()=>{
-    if(K.conf!=='reset-db'){K.conf='reset-db';return msg('kosongkan db offline? klik lagi');}
+    if(K.conf!=='reset-db'){K.conf='reset-db';return msg('kosongkan db & cache? klik lagi');}
     K.conf=null;
+    msg('membersihkan cache & db offline...');
+
+    // 1. Kosongkan seluruh Cache Storage Browser (Service Worker Cache)
+    if('caches' in window){
+      try{
+        const ks=await caches.keys();
+        await Promise.all(ks.map(k=>caches.delete(k)));
+      }catch(_){}
+    }
+
+    // 2. Kosongkan IndexedDB lokal (tabel data & mutasi offline)
     K.shs.forEach(s=>{
       K.db[s]=[];
       idbClearStore(s);
     });
     idbClearStore('mut');
+
+    // 3. Reset versi lokal & simpan status bersih
     L.vs='[]';
     persist();
-    msg('db offline dikosongkan. sync...');
     render();
+
+    // 4. Tarik skema ultra dinamis & data terbaru langsung dari server
+    msg('db & cache bersih. sync...');
     await syn(true);
     await testConn();
     render();
