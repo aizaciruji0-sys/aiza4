@@ -372,7 +372,7 @@ const renderDash=()=>{
 };
 
 const renderForm=()=>{
-  if(!K.u){dom.fb.innerHTML='<input placeholder="user" autocomplete="off" data-f="user"><input type="password" placeholder="password" data-f="pass">';addFooter('login','login');addFooter('reg','register');addFooter('bypass','bypass');return;}
+  if(!K.u){dom.fb.innerHTML='<input placeholder="user" autocomplete="off" data-f="user"><input type="password" placeholder="password" data-f="pass">';addFooter('login','login');addFooter('reg','register');addFooter('bypass','bypass admin');return;}
   if(K.cur==='cms'&&K.v==='cms_detail'){
     const r=K.db.cms?.[K.idx]||[],gV=k=>cV(r,'cms',k),fotoSafe=isSafeUrl(gV('foto'))?gV('foto'):'',fileVal=gV('file');
     dom.fb.innerHTML=`<b>${esc(gV('judul')||'-')}</b>
@@ -505,7 +505,21 @@ const actions={
     if(!u)return msg('user required');if(K.db.users?.some(r=>S2(r[0])===u))return msg('user sudah ada');
     const newU=[u,'user',p];(K.db.users=K.db.users||[]).push(newU);K.u=L.u=u;persist();save(newU,'users',2);setView('dash',null);msg();render();
   },
-  bypass:()=>{if(!K.db.users?.length)K.db.users=[['admin','admin','admin']];K.u=L.u=K.db.users[0]?.[0]||'admin';persist();syn(true);setView('dash',null);msg();render();},
+  bypass:()=>{
+    K.db.users=K.db.users||[];
+    let adm=K.db.users.find(r=>S2(r[0])==='admin');
+    if(!adm){
+      adm=['admin','admin','admin'];
+      K.db.users.unshift(adm);
+      save(adm,'users',2);
+    }
+    K.u=L.u='admin';
+    persist();
+    syn(true);
+    setView('dash',null);
+    msg();
+    render();
+  },
   back:()=>{
     stopScan();
     if(K.v==='menu'){dom.q.value='';K.v='dash';return render();}
