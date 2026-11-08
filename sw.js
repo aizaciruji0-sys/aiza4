@@ -1,4 +1,4 @@
-const C='apex-v4',FILES=['./','index.html','style.css','config.js','app.js','manifest.json','icon.svg'];
+const C='apex-v5',FILES=['./','index.html','style.css','config.js','app.js','manifest.json','icon.svg'];
 
 self.addEventListener('install',e=>{
   e.waitUntil(caches.open(C).then(c=>c.addAll(FILES)).catch(()=>{}));
