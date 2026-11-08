@@ -8,14 +8,16 @@ const ch=(typeof BroadcastChannel!=='undefined')?new BroadcastChannel('sync'):{p
 ch.onmessage=e=>{if(e.data==='synced')render();else if(e.data==='kick'&&!syncing)syn();};
 
 async function pullStream(url,onRow){
-  const res=await fetch(url);if(!res.body)return;
-  const reader=res.body.pipeThrough(new TextDecoderStream()).getReader();let buf='';
-  while(true){
-    const{value,done}=await reader.read();if(done)break;
-    buf+=value;const lines=buf.split('\n');buf=lines.pop();
-    for(const l of lines){if(l.trim()){try{onRow(JSON.parse(l));}catch{}}}
-  }
-  if(buf.trim()){try{onRow(JSON.parse(buf));}catch{}}
+  try{
+    const res=await fetch(url);if(!res.body)return;
+    const reader=res.body.pipeThrough(new TextDecoderStream()).getReader();let buf='';
+    while(true){
+      const{value,done}=await reader.read();if(done)break;
+      buf+=value;const lines=buf.split('\n');buf=lines.pop();
+      for(const l of lines){if(l.trim()){try{onRow(JSON.parse(l));}catch{}}}
+    }
+    if(buf.trim()){try{onRow(JSON.parse(buf));}catch{}}
+  }catch(_){}
 }
 
 function idbPut(row,st='mut'){if(!db)return;try{db.transaction(st,'readwrite').objectStore(st).put(row);}catch{}}
@@ -28,18 +30,21 @@ function save(row,targetTable=K.cur,actionType=2){
 }
 
 function initDB(tables=[],onReady){
-  const req=indexedDB.open('r',112);
-  req.onupgradeneeded=e=>{
-    const d=e.target.result;
-    tables.forEach(t=>!d.objectStoreNames.contains(t)&&d.createObjectStore(t,{keyPath:'_seq',autoIncrement:true}));
-    if(!d.objectStoreNames.contains('mut'))d.createObjectStore('mut',{keyPath:'i'});
-  };
-  req.onsuccess=e=>{db=e.target.result;onReady?.(db);};
+  try{
+    const req=indexedDB.open('r',112);
+    req.onupgradeneeded=e=>{
+      const d=e.target.result;
+      tables.forEach(t=>!d.objectStoreNames.contains(t)&&d.createObjectStore(t,{keyPath:'_seq',autoIncrement:true}));
+      if(!d.objectStoreNames.contains('mut'))d.createObjectStore('mut',{keyPath:'i'});
+    };
+    req.onsuccess=e=>{db=e.target.result;onReady?.(db);};
+    req.onerror=()=>{onReady?.(null);};
+  }catch(_){onReady?.(null);}
 }
 
 async function req(p={}){
   p.u=p.u||L.u||'';
-  if(HARD.d1Url&&['pull_batch','pull','manifest','push','stream'].includes(p.a)){
+  if(HARD.d1Url&&['pull_batch','pull','manifest','push','stream','ensure_all','schema_crud'].includes(p.a)){
     try{
       const r=await(await fetch(HARD.d1Url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)})).json();
       if(r?.ok||r?.s==='ok'||r?.status==='ok')return r;
@@ -496,10 +501,7 @@ const actions={
   menu:()=>{if(!dom.scBox.hidden)stopScan();if(K.v==='menu'){dom.q.value='';K.v='dash';}else{K.v='menu';dom.q.value='';}render();},
   refresh:async()=>{
     msg('syncing dataset & tables...');
-    // 1. Pastikan seluruh tabel dan kolom aktif terbuat di D1 dan Google Sheets
     await req({a:'ensure_all', tn:K.shs, cols:K.cols, gasUrl:HARD.gasUrl});
-    
-    // 2. Dorong seluruh antrean mutasi & snapshot dataset lokal terkini ke D1 dan GAS
     const muts = await ga('mut');
     await req({
       a: 'push',
@@ -511,236 +513,15 @@ const actions={
       gasUrl: HARD.gasUrl
     });
     if (muts.length) await rm('mut', muts.map(x => x.i));
-
-    // 3. Tarik seluruh dataset segar (Force Pull)
     await syn(true);
-    
-    // 4. Verifikasi status koneksi
     await testConn();
     render();
   },
-  scan:()=>{if(!dom.scBox.hidden)stopScan();else startScan('q');},
-  'scan-prod':()=>{if(!dom.scBox.hidden)stopScan();else startScan('form-prod');},
-  'scan-stop':stopScan,
-  'img-cls':()=>{dom.ib.hidden=true;dom.it.src='';render();},
-  'df-today':()=>{K.df.from=K.df.to=today();persist();render();},
-  'df-clear':()=>{K.df={u:'',from:'',to:'',kat:''};persist();render();},
-  'v-dash':()=>{K.prefill=K.prodIdx=null;setView('dash',null);render();},
-  'v-toko':()=>{setView('toko',null);render();},
-  'v-kas':()=>{if(!K.shs.includes('kas'))K.shs.push('kas');K.cur='kas';K.prefill=K.prodIdx=null;setView('form',-1);render();},
-  'v-shop':()=>{K.cur='produk';K.grid=true;K.prefill=K.prodIdx=null;setView('list',null);K.readyOnly=false;render();},
-  'v-jual':()=>{const op=getOpenTrx('penjualan');if(op)K.parent={type:'penjualan',id:op.id,open:true};K.cur='produk_jual';K.grid=false;setView('list',null);render();},
-  'v-beli':()=>{const op=getOpenTrx('pembelian');if(op)K.parent={type:'pembelian',id:op.id,open:true};K.cur='produk_beli';K.grid=false;setView('list',null);render();},
-  'v-selesai':()=>{if(!K.parent)return;const fi=(K.db[K.parent.type]||[]).findIndex(r=>S2(r[0])===S2(K.parent.id));K.cur=K.parent.type;setView('form',fi!==-1?fi:null);render();},
-  'clear-items':()=>{
-    if(K.conf!=='clear-items'){K.conf='clear-items';render();return;}
-    if(!K.parent)return;
-    const pType=K.parent.type,pid=S2(K.parent.id),ch=childOf(pType),fkI=cI(ch,fkCol(ch));
-    if(fkI!==-1){(K.db[ch]||[]).filter(r=>S2(r[fkI])===pid).forEach(r=>{syncStockDelta(ch,r,null);save(r,ch,0);});K.db[ch]=(K.db[ch]||[]).filter(r=>S2(r[fkI])!==pid);}
-    if(K.db[pType]){const pRow=K.db[pType].find(r=>S2(r[0])===pid);if(pRow)save(pRow,pType,0);K.db[pType]=K.db[pType].filter(r=>S2(r[0])!==pid);}
-    if(pType==='penjualan'&&K.db.cicil){K.db.cicil.filter(c=>S2(cV(c,'cicil','idjual'))===pid).forEach(c=>save(c,'cicil',0));K.db.cicil=K.db.cicil.filter(c=>S2(cV(c,'cicil','idjual'))!==pid);}
-    K.parent=K.conf=null;persist();syn(true);K.cur='produk';setView('list',null);render();
-  },
-  'add-cart-item':()=>{K.prefill=null;K.prodIdx=null;setView('form',-1);render();},
-  'edit-cms':()=>{setView('form',K.idx);render();},
-  'up-cms-file':()=>dom.fDoc.click(),
-  'dl-cms-file':()=>{
-    const r=K.db[K.cur]?.[K.idx]||[],fV=cV(r,K.cur,'file')||cV(r,K.cur,'foto'),kV=cV(r,K.cur,'konten'),jV=cV(r,K.cur,'judul')||'file';
-    if(fV&&/^data:/i.test(fV)){const m=fV.match(/^data:([^;]+);base64,/),a=document.createElement('a');a.href=fV;a.download=`${jV}.${m?m[1].split('/')[1]:'bin'}`;document.body.appendChild(a);a.click();a.remove();}
-    else if(fV&&isSafeUrl(fV))window.open(fV,'_blank','noopener,noreferrer');
-    else if(kV)dl(kV,`${jV}.txt`,'text/plain;charset=utf-8');
-    else msg('kosong');
-  },
-  nav:b=>{K.cur=b.dataset.s;setView('list',null);K.page=1;K.readyOnly=b.dataset.slice==='ready';render();},
-  add:()=>{if(!NO_ADD.includes(K.cur)&&hasAccess('add',K.cur)){setView('form',-1);render();}},
-  'edit-prod':()=>{if(K.prodIdx!==null){K.cur='produk';const pi=K.prodIdx;K.prodIdx=K.prefill=null;setView('form',pi);render();}},
-  'jual-prod':()=>{if(K.idx>=0){const p=K.db.produk[K.idx]||[];if(!K.shs.includes('produk_jual'))K.shs.push('produk_jual');K.cur='produk_jual';K.prefill={idproduk:p[0],namaproduk:p[3],hargabeli:p[4],hargajual:p[5],qty:'1',diskon:'',catatan:''};K.prodIdx=K.idx;setView('form',-1);render();}},
-  'beli-prod':()=>{if(K.idx>=0){const p=K.db.produk[K.idx]||[];if(!K.shs.includes('produk_beli'))K.shs.push('produk_beli');K.cur='produk_beli';K.prefill={idproduk:p[0],namaproduk:p[3],hargabeli:p[4],hargajual:p[5],qty:'1'};K.prodIdx=K.idx;setView('form',-1);render();}},
-  'ecer-prod':()=>{if(K.idx>=0){const p=K.db.produk[K.idx]||[];if(!K.shs.includes('ecer'))K.shs.push('ecer');K.cur='ecer';K.prefill={idproduk:p[0],namaproduk:p[3],hargabeli:p[4],hargajual:p[5],qty:'1',diskon:'',catatan:''};K.prodIdx=K.idx;setView('form',-1);render();}},
-  
-  // ULTRA DYNAMIC BULKSHEET
-  'save-bulksheet':()=>{
-    const val=dom.fb.querySelector('textarea')?.value||'',updated=[];
-    val.split(/\r?\n/).filter(Boolean).forEach(l=>{
-      const p=l.split(':'),n=S2(p[0]);if(!n||updated.includes(n))return;
-      const colsList=p.slice(1).join(':').split(',').map(S2).filter(Boolean);
-      if(!colsList.length)return;
-      updated.push(n);K.db[n]=K.db[n]||[];
-      K.cols[n]=colsList;
-      if(!K.vis[n]?.length)K.vis[n]=K.cols[n].slice(0,4);
-    });
-    if(!updated.length)return msg('min 1 sheet');
-
-    // Deteksi tabel yang dihapus untuk di-drop di backend
-    const droppedTables = K.shs.filter(s => !updated.includes(s));
-    K.shs.forEach(s=>{if(!updated.includes(s)){delete K.db[s];delete K.cols[s];delete K.vis[s];delete K.fvis[s];}});
-    K.shs=updated;if(!K.shs.includes(K.cur))K.cur=K.shs[0];
-    persist();
-
-    // Kirim sinkronisasi skema struktural termasuk drop table
-    req({a:'schema_crud', op:'sync_all', shs:K.shs, cols:K.cols, dropped:droppedTables, gasUrl:HARD.gasUrl}).then(()=>syn(true));
-    setView('list',null);render();
-  },
-
-  // ULTRA DYNAMIC SCHEMA EDITOR (CRUD KOLOM & TABEL)
-  'save-schema':()=>{
-    const nc=(dom.fb.querySelector('[data-f="cols"]')?.value||'').split(',').map(S2).filter(Boolean);
-    if(nc.length){
-      const oldCols = K.cols[K.cur] || [];
-      K.cols[K.cur]=nc;
-      K.vis[K.cur]=(dom.fb.querySelector('[data-f="vis"]')?.value||'').split(',').map(S2).filter(x=>nc.includes(x))||nc.slice(0,4);
-      K.fvis[K.cur]=(dom.fb.querySelector('[data-f="form"]')?.value||'').split(',').map(S2).filter(x=>nc.includes(x))||nc.slice();
-      (K.db[K.cur]||[]).forEach(r=>{
-        if(r.length>nc.length)r.length=nc.length;
-        while(r.length<nc.length)r.push('');
-      });
-      persist();
-
-      // Trigger DDL backend untuk sinkronisasi penambahan/penghapusan kolom
-      req({
-        a: 'schema_crud',
-        op: 'alter_cols',
-        table: K.cur,
-        cols: nc,
-        oldCols: oldCols,
-        shs: K.shs,
-        allCols: K.cols,
-        gasUrl: HARD.gasUrl
-      }).then(() => syn(true));
-    }
-    setView('list',null);render();
-  },
-
-  // Hapus Tabel Aktif Secara Struktural di Front & Backend
-  'del-table':()=>{
-    if(K.conf!=='del-table'){K.conf='del-table';return msg(`Hapus tabel ${K.cur}? Klik lagi`);}
-    K.conf=null;
-    const target=K.cur;
-    if(K.shs.length<=1)return msg('Minimal harus ada 1 tabel tersisa');
-    
-    delete K.db[target];delete K.cols[target];delete K.vis[target];delete K.fvis[target];
-    K.shs=K.shs.filter(s=>s!==target);
-    K.cur=K.shs[0];
-    idbClearStore(target);
-    persist();
-
-    req({a:'schema_crud', op:'drop_table', table:target, shs:K.shs, cols:K.cols, gasUrl:HARD.gasUrl}).then(()=>syn(true));
-    msg(`Tabel ${target} dihapus`);
-    setView('list',null);render();
-  },
-
-  'save-row':()=>{
-    if(K.writing)return;K.writing=true;
-    try{
-      const c=cols(),oldRow=(K.idx>=0&&K.db[K.cur][K.idx])?K.db[K.cur][K.idx].slice():null,row=oldRow?oldRow.slice(0,c.length):new Array(c.length).fill('');
-      while(row.length<c.length)row.push('');
-      dom.fb.querySelectorAll('[data-col]').forEach(inp=>{const ci=c.indexOf(inp.dataset.col);if(ci!==-1)row[ci]=inp.value.trim();});
-      const rules=getRoleRules(),valOf=k=>row[c.indexOf(k)]||'';
-      if(rules.includes('wajiblokasi')&&c.some(k=>/lokasi|alamat/i.test(k))){if(!valOf(c.find(k=>/lokasi|alamat/i.test(k))))return msg('wajib lokasi');}
-      if(rules.includes('wajibfoto')&&c.some(k=>/foto/i.test(k))){const fv=valOf(c.find(k=>/foto/i.test(k)));if(!fv||!isSafeUrl(fv))return msg('wajib foto');}
-      if(rules.includes('wajibkontak')&&c.includes('idkontak')&&!valOf('idkontak'))return msg('wajib idkontak');
-      if(rules.includes('wajibabsen')&&['penjualan','kas','pembelian'].includes(K.cur)&&!(K.db.absen||[]).some(a=>S2(cV(a,'absen','user'))===S2(K.u||'admin')&&cV(a,'absen','date')===today()))return msg('wajib absen hari ini');
-      if(rules.includes('wajibstok')&&['produk_jual','ecer'].includes(K.cur)){
-        const pRow=K.db.produk?.find(p=>S2(p[0])===S2(valOf('idproduk'))),stkCur=pRow?N(cV(pRow,'produk','stok')):0;
-        if(pRow&&N(valOf('qty'))>stkCur)return msg('stok tidak cukup');
-      }
-      const pType=parentOf(K.cur);
-      if(pType&&K.idx===-1){
-        if(!K.parent||K.parent.type!==pType)K.parent=getOpenTrx(pType)||{type:pType,id:genId(),open:true};
-        const pCols=cols(pType);
-        if(!(K.db[pType]||[]).some(r=>S2(r[0])===S2(K.parent.id))){
-          const newP=new Array(pCols.length).fill('');newP[0]=K.parent.id;
-          pCols.forEach((col,i)=>{if(/date|tanggal/i.test(col))newP[i]=today();else if(col==='user')newP[i]=K.u||'admin';else if(col==='status')newP[i]='draft';});
-          (K.db[pType]||[]).push(newP);save(newP,pType,2);
-        }
-        const fkI=c.indexOf(fkCol(K.cur));if(fkI!==-1)row[fkI]=K.parent.id;
-      }
-      if(!row[0])row[0]=genId();
-      if(isTrx()){
-        const sI=cI(K.cur,'status');
-        if(sI===-1||row[sI]!=='revisi'){
-          const{raw,disc}=calcItems(K.cur,row[0]),net=Math.max(0,raw-disc-N(cV(row,K.cur,'diskon'))),paid=N(cV(row,K.cur,'bayar')),cicil=K.cur==='penjualan'?(K.db.cicil||[]).reduce((a,c)=>a+(S2(cV(c,'cicil','idjual'))===S2(row[0])?N(cV(c,'cicil','jumlah')):0),0):0,kId=cV(row,K.cur,'idkontak'),totPaid=paid+cicil;
-          if(sI>-1){if(net<=0)row[sI]='draft';else if(totPaid>=net)row[sI]='lunas';else if(kId)row[sI]='piutang';else row[sI]='draft';}
-          if((row[sI]==='piutang'||(net>0&&totPaid<net))&&cI(K.cur,'idkontak')!==-1&&!kId)return msg('piutang wajib idkontak');
-        }
-      }
-      if(K.idx===-1){(K.db[K.cur]=K.db[K.cur]||[]).push(row);syncStockDelta(K.cur,null,row);save(row,K.cur,2);}
-      else if(K.idx>=0){K.db[K.cur][K.idx]=row;syncStockDelta(K.cur,oldRow,row);save(row,K.cur,1);}
-      persist();
-      if(pType&&K.parent?.id)syncTrx(pType);
-      if(isTrx()&&row[0]){syncTrx(K.cur);const st=S2(cV(row,K.cur,'status'));if(st!=='draft'&&st!=='revisi')K.parent=null;}
-      if(K.cur==='cicil'){const cJual=cV(row,'cicil','idjual');if(cJual)syncTrx('penjualan');}
-      const justTrxId=isTrx()?row[0]:null,wasPenjualan=K.cur==='penjualan';
-      K.prefill=K.conf=K.prodIdx=K.savedFormState=null;
-      if(wasPenjualan&&justTrxId){K.receiptRaw=formatNota(justTrxId);setView('nota',null);render();}
-      else if(pType){K.cur='produk';K.grid=true;setView('list',null);render();}
-      else{setView('list',null);render();}
-    }finally{K.writing=false;}
-  },
-  'del-row':()=>{
-    if(K.conf!=='del'){K.conf='del';render();return;}
-    if(K.idx==null||K.idx<0)return;
-    const pType=parentOf(K.cur),pid=pType?(K.db[K.cur][K.idx]?.[cI(K.cur,fkCol(K.cur))]||K.parent?.id):null,id=K.db[K.cur][K.idx]?.[0],delCicilJual=K.cur==='cicil'?cV(K.db[K.cur][K.idx],'cicil','idjual'):null,rem=K.db[K.cur].splice(K.idx,1)[0];
-    syncStockDelta(K.cur,rem,null);save(rem,K.cur,0);
-    if(isTrx()&&id){
-      const ch=childOf(K.cur),fkI=cI(ch,fkCol(ch));
-      if(fkI!==-1){(K.db[ch]||[]).filter(r=>S2(r[fkI])===S2(id)).forEach(r=>{syncStockDelta(ch,r,null);save(r,ch,0);});K.db[ch]=K.db[ch].filter(r=>S2(r[fkI])!==id);}
-      if(K.cur==='penjualan'&&K.db.cicil){K.db.cicil.filter(c=>S2(cV(c,'cicil','idjual'))===S2(id)).forEach(c=>save(c,'cicil',0));K.db.cicil=K.db.cicil.filter(c=>S2(cV(c,'cicil','idjual'))!==id);}
-    }
-    if(K.cur==='kontak'&&id){['penjualan','pembelian','cicil'].forEach(sh=>{const ki=cI(sh,'idkontak');if(ki!==-1&&K.db[sh]){K.db[sh].forEach(r=>{if(S2(r[ki])===S2(id)){r[ki]='';save(r,sh,1);}});}});}
-    persist();if(pType&&pid)syncTrx(pType);if(delCicilJual)syncTrx('penjualan');setView('list',null);render();
-  },
-  'dup-row':()=>{if(K.idx>=0){const old=(K.db[K.cur][K.idx]||[]).slice(),c=cols();K.prefill={};c.forEach((col,i)=>{K.prefill[col]=old[i]||'';});K.prefill[c[0]]=genId();setView('form',-1);render();}},
-  'trx-pick-kontak':()=>{if(!K.shs.includes('kontak'))return;const curState={};dom.fb.querySelectorAll('[data-col]').forEach(inp=>{curState[inp.dataset.col]=inp.value;});K.savedFormState=curState;K.refTargetInp='idkontak';K.cur='kontak';setView('list',null);render();},
-  'trx-set-kontak':()=>{
-    const pType=K.parent?.type||'penjualan',op=getOpenTrx(pType);if(!op)return msg('tidak ada transaksi');
-    const r=K.db.kontak?.[K.idx]||[],kId=cV(r,'kontak','idkontak')||r[0]||'';if(!kId)return msg('idkontak kosong');
-    const trgRow=K.db[pType]?.find(x=>S2(x[0])===S2(op.id));
-    if(trgRow&&cI(pType,'idkontak')!==-1){trgRow[cI(pType,'idkontak')]=kId;save(trgRow,pType,1);}
-    persist();if(op.id)syncTrx(pType);K.cur=pType;setView('form',(K.db[pType]||[]).indexOf(trgRow));render();
-  },
-  'pay-pas':()=>{
-    const r=(K.idx!==null&&K.idx>=0)?K.db[K.cur][K.idx]:null,pid=r?r[0]:(dom.fb.querySelector(`[data-col="${qEsc(cols()[0])}"]`)?.value||''),bInp=dom.fb.querySelector('[data-col="bayar"]');
-    if(bInp&&pid){const dVal=N(dom.fb.querySelector('[data-col="diskon"]')?.value||(r?cV(r,K.cur,'diskon'):0)),{raw,disc}=calcItems(K.cur,pid);bInp.value=String(Math.max(0,raw-disc-dVal));}
-  },
-  revisi:()=>{if(K.idx>=0){const r=K.db[K.cur][K.idx],pid=r?.[0];if(pid){K.parent={type:K.cur,id:pid,open:true};if(cI(K.cur,'status')!==-1){r[cI(K.cur,'status')]='revisi';save(r,K.cur,1);persist();}K.cur=childOf(K.cur);setView('list',null);render();}}},
-  cicil:()=>{
-    if(K.idx>=0){
-      const r=K.db[K.cur][K.idx],pid=r?.[0];
-      if(pid){
-        if(!K.shs.includes('cicil'))K.shs.push('cicil');
-        const{raw,disc}=calcItems('penjualan',pid),net=Math.max(0,raw-disc-N(cV(r,'penjualan','diskon'))),paid=N(cV(r,'penjualan','bayar'))+(K.db.cicil||[]).reduce((a,c)=>a+(S2(cV(c,'cicil','idjual'))===S2(pid)?N(cV(c,'cicil','jumlah')):0),0),remDebt=Math.max(0,net-paid);
-        K.cur='cicil';K.prefill={idjual:pid,idkontak:cV(r,'penjualan','idkontak'),date:today(),user:K.u||'admin',jumlah:remDebt>0?String(remDebt):''};setView('form',-1);render();
-      }
-    }
-  },
-  'trx-rincian':()=>{if(K.idx>=0){const pid=K.db[K.cur][K.idx]?.[0];if(pid){K.parent={type:K.cur,id:pid,open:true};K.cur=childOf(K.cur);setView('list',null);render();}}},
-  'show-nota':()=>{const pid=(K.cur==='penjualan'&&K.idx>=0)?K.db.penjualan[K.idx]?.[0]:(K.parent?.type==='penjualan'?K.parent.id:K.db.penjualan?.[0]?.[0]);if(!pid)return;K.receiptRaw=formatNota(pid);setView('nota',null);render();},
-  rawbt:()=>{if(!K.receiptRaw)return;const txt=K.receiptRaw.trim()+'\r\n\r\n\r\n',u=encodeURIComponent(txt);if(/Android/i.test(navigator.userAgent))W.location.href=`intent:${u}#Intent;scheme=rawbt;package=ru.a402d.rawbtprinter;end;`;else W.location.href=`rawbt:${u}`;},
-  jpg:()=>{
-    if(!K.receiptRaw)return;
-    const lines=K.receiptRaw.split(/\r?\n/),lh=18,fs=13,fontStr=`${fs}px monospace`,mCan=document.createElement('canvas'),mCtx=mCan.getContext('2d');
-    mCtx.font=fontStr;let maxW=0;lines.forEach(l=>{const w=mCtx.measureText(l).width;if(w>maxW)maxW=w;});
-    const w=Math.ceil(maxW)||280,h=lines.length*lh+4,can=document.createElement('canvas');can.width=w;can.height=h;
-    const ctx=can.getContext('2d');ctx.fillStyle='#ffffff';ctx.fillRect(0,0,w,h);ctx.fillStyle='#000000';ctx.font=fontStr;ctx.textBaseline='top';
-    lines.forEach((l,i)=>ctx.fillText(l,0,i*lh+2));
-    can.toBlob(blob=>{
-      if(!blob)return msg('gagal render jpg');
-      const dlImg=()=>{const u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=`nota_${Date.now()}.png`;document.body.appendChild(a);a.click();setTimeout(()=>{a.remove();URL.revokeObjectURL(u);},500);msg('jpg diunduh!');};
-      try{if(navigator.clipboard&&W.ClipboardItem)navigator.clipboard.write([new ClipboardItem({'image/png':blob})]).then(()=>msg('jpg tersalin!')).catch(()=>dlImg());else dlImg();}catch{dlImg();}
-    },'image/png');
-  },
-  print:()=>W.print(),
-  'copy-nota':()=>{copyTxt(K.receiptRaw);msg('nota tersalin');},
-  'save-store':()=>{dom.fb.querySelectorAll('[data-cfg]').forEach(i=>K.store[i.dataset.cfg]=i.value.trim());persist();syn(true);setView('list',null);render();},
-  
-  // RESET DB MURNI OFFLINE + KOSONGKAN SELURUH CACHE
   'reset-db':async()=>{
     if(K.conf!=='reset-db'){K.conf='reset-db';return msg('kosongkan db & cache? klik lagi');}
     K.conf=null;
     msg('membersihkan cache & db offline...');
 
-    // 1. Kosongkan seluruh Cache Storage Browser (Service Worker Cache)
     if('caches' in window){
       try{
         const ks=await caches.keys();
@@ -748,43 +529,20 @@ const actions={
       }catch(_){}
     }
 
-    // 2. Kosongkan IndexedDB lokal (tabel data & mutasi offline)
     K.shs.forEach(s=>{
       K.db[s]=[];
       idbClearStore(s);
     });
     idbClearStore('mut');
 
-    // 3. Reset versi lokal & simpan status bersih
     L.vs='[]';
     persist();
     render();
 
-    // 4. Tarik skema ultra dinamis & data terbaru langsung dari server
     msg('db & cache bersih. sync...');
     await syn(true);
     await testConn();
     render();
-  },
-
-  'pwa-install':()=>{if(K.pwaEvent){K.pwaEvent.prompt();K.pwaEvent.userChoice.then(()=>{K.pwaEvent=null;render();});}},
-  grid:()=>{K.grid=!K.grid;render();},
-  dir:()=>{K.dir=-K.dir;K.page=1;render();},
-  more:()=>{K.page++;render();},
-  logout:()=>{K.u=L.u='';K.hist=[];K.readyOnly=false;persist();render();},
-  cam:()=>dom.fCam.click(),pic:()=>dom.fImg.click(),
-  gimg:()=>{const q=dom.fb.querySelector('[data-col="namaproduk"]')?.value||dom.fb.querySelector('[data-col="nama"]')?.value||dom.q.value||'';if(q)W.open('https://www.google.com/search?tbm=isch&q='+encodeURIComponent(q),'_blank','noopener,noreferrer');else msg('nama kosong');},
-  navigasi:()=>{const loc=(Array.from(dom.fb.querySelectorAll('[data-col]')).find(i=>/alamat|lokasi/i.test(i.dataset.col))?.value||'').trim();if(loc){if(/Android|iPhone|iPad/i.test(navigator.userAgent))W.location.href=`geo:${loc}?q=${encodeURIComponent(loc)}`;else W.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(loc)}`,'_blank','noopener,noreferrer');}else msg('koordinat kosong');},
-  gps:()=>{const trg=Array.from(dom.fb.querySelectorAll('[data-col]')).find(i=>/alamat|lokasi/i.test(i.dataset.col));if(!trg||!navigator.geolocation)return msg(!trg?'kolom kosong':'no gps');navigator.geolocation.getCurrentPosition(p=>{trg.value=`${p.coords.latitude.toFixed(6)},${p.coords.longitude.toFixed(6)}`;},()=>msg('gps err'),{enableHighAccuracy:true,timeout:5000});},
-  'sh-sel':el=>{if(!dom.scBox.hidden)stopScan();K.cur=el.value;K.parent=K.prefill=K.prodIdx=K.savedFormState=null;setView('list',null);K.page=1;K.readyOnly=false;render();},
-  'st-sel':el=>{K.sort=parseInt(el.value,10)||0;K.page=1;render();},
-  'act-sel':el=>{
-    const a=el.value;el.value='';if(!a)return;
-    if(a==='edit'){setView(K.v==='edit'?'list':'edit',null);render();}
-    else if(a==='bulksheet'||a==='schema'){setView(a,null);render();}
-    else if(a==='imp')dom.f.click();
-    else if(a==='tsv')dl([cols().join('\t')].concat((K.db[K.cur]||[]).map(r=>r.join('\t'))).join('\r\n'),`${K.cur}_${Date.now()}.tsv`,'text/tab-separated-values');
-    else if(a==='clear'){if(K.conf!=='clear'){K.conf='clear';msg(`clear ${K.cur}?`);return;}K.db[K.cur].forEach(r=>save(r,K.cur,0));K.db[K.cur]=[];K.conf=null;persist();syn(true);render();}
   },
   f:el=>{
     const file=el.files?.[0];if(!file)return;el.value='';const rd=new FileReader();
