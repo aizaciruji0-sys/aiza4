@@ -258,7 +258,7 @@ const syncTrx=t=>{
   persist();save(r,t,1);
 };
 
-const getOpenTrx=t=>{
+const getOpenTrx(t)=>{
   if(!t)return null;const rows=K.db[t]||[],u=S2(K.u||'admin');
   if(K.parent?.type===t){const r=rows.find(x=>S2(x[0])===S2(K.parent.id));if(r&&isUserVisible(r,t)&&['draft','revisi'].includes(S2(cV(r,t,'status'))))return{type:t,id:r[0],row:r,status:cV(r,t,'status')};}
   const r=rows.find(x=>(isAdmin()||S2(cV(x,t,'user'))===u)&&['draft','revisi'].includes(S2(cV(x,t,'status'))));
@@ -305,7 +305,7 @@ const queryRows=()=>{
 const renderChrome=()=>{
   const allowed=K.shs.filter(s=>hasAccess(s));
   if(dom.sh.dataset.shs!==allowed.join(',')){dom.sh.innerHTML=allowed.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');dom.sh.dataset.shs=allowed.join(',');}
-  if(!allowed.includes(K.cur)&&allowed.length)K.cur=allowed[0];
+  if(!allowed.includes(K.cur&&allowed.length))K.cur=allowed[0];
   dom.sh.value=K.cur;dom.sh.hidden=!hasAccess('sh-sel');
   const c=cols();
   if(dom.st.dataset.cur!==K.cur||dom.st.children.length!==(c.length+1)){
@@ -358,9 +358,9 @@ const renderForm=()=>{
     const r=K.db.cms?.[K.idx]||[],gV=k=>cV(r,'cms',k),fotoSafe=isSafeUrl(gV('foto'))?gV('foto'):'',fileVal=gV('file');
     dom.fb.innerHTML=`<b>${esc(gV('judul')||'(tanpa judul)')}</b>
     <small>${esc(gV('date'))} ${gV('user')?'| '+esc(gV('user')):''} ${gV('kategori')?'| '+esc(gV('kategori')):''} ${gV('status')?'| ['+esc(gV('status'))+']':''}</small>
-    <p style="white-space:pre-wrap;margin:8px 0;">${esc(gV('konten'))}</p>
-    ${fotoSafe?`<img src="${esc(fotoSafe)}" alt="cms" style="max-width:100%;border-radius:6px;margin:6px 0;"><br>`:''}
-    ${fileVal?`<button data-a="dl-cms-file" class="btn-dl">⬇ Download Lampiran File</button><br>`:''}`;
+    <p>${esc(gV('konten'))}</p>
+    ${fotoSafe?`<img src="${esc(fotoSafe)}" alt="cms"><br>`:''}
+    ${fileVal?'<button data-a="dl-cms-file">⬇ Download Lampiran File</button><br>':''}`;
     addFooter('back','<',K.cur);
     if(fileVal)addFooter('dl-cms-file','unduh file',K.cur);
     addFooter('edit-cms','edit',K.cur);
