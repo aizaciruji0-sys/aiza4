@@ -404,6 +404,8 @@ const renderForm=()=>{
     else if(K.idx===-1&&!val&&/date|tanggal/i.test(col))val=today();
     else if(K.idx===-1&&!val&&col==='user')val=K.u||'admin';
     else if(K.idx===-1&&!val&&K.cur==='cms'&&col==='status')val='publish';
+    else if(K.idx===-1&&!val&&K.cur==='roles'&&col==='hide')val='hargabeli,profit,users,roles,toko,bulksheet,schema,clear,del-row,reset-db';
+    else if(K.idx===-1&&!val&&K.cur==='roles'&&col==='validasi')val='wajibstok,wajibkontak';
     const isLong=/catatan|alamat|uraian|konten|akses|hide|validasi/i.test(col),isDate=/date|tanggal/i.test(col),tag=isLong?'textarea':'input',typeAttr=isDate?'type="date"':'';
     dom.fb.insertAdjacentHTML('beforeend',`<${tag} ${typeAttr} placeholder="${esc(col)}" value="${esc(val)}" data-col="${esc(col)}">${isLong?esc(val):''}</${tag}>`);
     updateFormThumb(dom.fb.querySelector(`[data-col="${CSS.escape(col)}"]`));
@@ -433,6 +435,7 @@ const renderForm=()=>{
     if(!isDraft)addFooter('print','print',K.cur);
   }
   if(K.cur==='kontak'&&(K.parent||getOpenTrx('penjualan')||getOpenTrx('pembelian')))addFooter('trx-set-kontak','trx',K.cur);
+  if(K.cur==='roles'){addFooter('preset-kasir','role kasir',K.cur);addFooter('preset-gudang','role gudang',K.cur);}
   if(K.idx!==null&&K.idx>=0){if(!isDraft)addFooter('dup-row','dup',K.cur);addFooter('del-row',K.conf==='del'?'sure?':'del',K.cur);}
   renderNavFooters();
 };
@@ -745,6 +748,16 @@ const actions={
     }
     else if(a==='imp'){dom.fImp.click();}
     else if(a==='clear'){if(K.conf!=='clear'){K.conf='clear';msg(`clear ${K.cur}?`);return;}K.db[K.cur].forEach(r=>save(r,K.cur,0));K.db[K.cur]=[];K.conf=null;persist();syn(true);render();}
+  },
+  'preset-kasir':()=>{
+    const hInp=dom.fb.querySelector('[data-col="hide"]'),vInp=dom.fb.querySelector('[data-col="validasi"]');
+    if(hInp)hInp.value='hargabeli,profit,users,roles,toko,bulksheet,schema,clear,del-row,reset-db';
+    if(vInp)vInp.value='wajibstok,wajibkontak,wajibabsen';
+  },
+  'preset-gudang':()=>{
+    const hInp=dom.fb.querySelector('[data-col="hide"]'),vInp=dom.fb.querySelector('[data-col="validasi"]');
+    if(hInp)hInp.value='hargajual,profit,penjualan,produk_jual,cicil,users,roles,toko,bulksheet,schema,clear,reset-db';
+    if(vInp)vInp.value='wajibstok,wajibfoto';
   }
 };
 
