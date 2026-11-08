@@ -550,17 +550,23 @@ const actions={
       if(!K.vis[n]?.length)K.vis[n]=K.cols[n].slice(0,4);
     });
     if(!updated.length)return msg('min 1 sheet');
+
+    // Deteksi tabel yang dihapus untuk di-drop di backend
+    const droppedTables = K.shs.filter(s => !updated.includes(s));
     K.shs.forEach(s=>{if(!updated.includes(s)){delete K.db[s];delete K.cols[s];delete K.vis[s];delete K.fvis[s];}});
     K.shs=updated;if(!K.shs.includes(K.cur))K.cur=K.shs[0];
     persist();
-    syn(true);
+
+    // Kirim sinkronisasi skema struktural termasuk drop table
+    req({a:'schema_crud', op:'sync_all', shs:K.shs, cols:K.cols, dropped:droppedTables, gasUrl:HARD.gasUrl}).then(()=>syn(true));
     setView('list',null);render();
   },
 
-  // ULTRA DYNAMIC SCHEMA EDITOR
+  // ULTRA DYNAMIC SCHEMA EDITOR (CRUD KOLOM & TABEL)
   'save-schema':()=>{
     const nc=(dom.fb.querySelector('[data-f="cols"]')?.value||'').split(',').map(S2).filter(Boolean);
     if(nc.length){
+      const oldCols = K.cols[K.cur] || [];
       K.cols[K.cur]=nc;
       K.vis[K.cur]=(dom.fb.querySelector('[data-f="vis"]')?.value||'').split(',').map(S2).filter(x=>nc.includes(x))||nc.slice(0,4);
       K.fvis[K.cur]=(dom.fb.querySelector('[data-f="form"]')?.value||'').split(',').map(S2).filter(x=>nc.includes(x))||nc.slice();
@@ -569,8 +575,37 @@ const actions={
         while(r.length<nc.length)r.push('');
       });
       persist();
-      syn(true);
+
+      // Trigger DDL backend untuk sinkronisasi penambahan/penghapusan kolom
+      req({
+        a: 'schema_crud',
+        op: 'alter_cols',
+        table: K.cur,
+        cols: nc,
+        oldCols: oldCols,
+        shs: K.shs,
+        allCols: K.cols,
+        gasUrl: HARD.gasUrl
+      }).then(() => syn(true));
     }
+    setView('list',null);render();
+  },
+
+  // Hapus Tabel Aktif Secara Struktural di Front & Backend
+  'del-table':()=>{
+    if(K.conf!=='del-table'){K.conf='del-table';return msg(`Hapus tabel ${K.cur}? Klik lagi`);}
+    K.conf=null;
+    const target=K.cur;
+    if(K.shs.length<=1)return msg('Minimal harus ada 1 tabel tersisa');
+    
+    delete K.db[target];delete K.cols[target];delete K.vis[target];delete K.fvis[target];
+    K.shs=K.shs.filter(s=>s!==target);
+    K.cur=K.shs[0];
+    idbClearStore(target);
+    persist();
+
+    req({a:'schema_crud', op:'drop_table', table:target, shs:K.shs, cols:K.cols, gasUrl:HARD.gasUrl}).then(()=>syn(true));
+    msg(`Tabel ${target} dihapus`);
     setView('list',null);render();
   },
 
