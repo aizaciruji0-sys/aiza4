@@ -1,20 +1,48 @@
+/* APEX ULTRA KISS ABSOLUTE — CSS */
+:root{color-scheme:light dark;--gap:2px}
 *{box-sizing:border-box;margin:0;padding:0}
 [hidden]{display:none!important}
-body{font:12px/1.2 sans-serif;word-break:break-word;display:flex;flex-direction:column;gap:2px;padding:2px 2px 32px;overflow-x:hidden}
-header,footer,main,#tools,#box-form,#box-nota{display:flex;flex-wrap:wrap;gap:2px;width:100%}
-header,footer{background:#fff;z-index:10}
+
+body{
+  display:flex;flex-direction:column;gap:var(--gap);
+  padding:var(--gap) var(--gap) 32px;
+  font:12px/1.2 sans-serif;overflow-wrap:anywhere;overflow-x:hidden;
+}
+img{max-width:100%;height:auto}
+
+/* Baris flex penuh lebar */
+header,footer,main,#tools,#box-form,#box-nota{display:flex;flex-wrap:wrap;gap:var(--gap);width:100%}
+
+/* Header & footer menempel */
+header,footer{background:Canvas;color:CanvasText;z-index:10}
 header{position:sticky;top:0;flex-wrap:nowrap}
-footer{position:fixed;left:0;right:0;bottom:0;padding:2px}
-button,input,select,textarea{flex:1 1 120px;min-width:0;min-height:24px;padding:2px 4px;border:1px solid;background:none;color:inherit;font:inherit}
+footer{position:fixed;inset:auto 0 0;padding:var(--gap)}
+
+/* Kontrol */
+button,input,select,textarea{
+  flex:1 1 120px;min-width:0;min-height:24px;padding:2px 4px;
+  border:1px solid;background:none;color:inherit;font:inherit;
+}
+textarea{display:block;resize:none}
 header>input{flex:1;min-width:60px}
 header>button{flex:none;padding:2px 5px}
-textarea{display:block;resize:none}
-#box-dash,#list{display:grid;gap:2px;width:100%}
+
+/* Dashboard & daftar */
+#box-dash,#list{display:grid;gap:var(--gap);width:100%}
 #box-dash{grid-template-columns:repeat(auto-fit,minmax(120px,1fr))}
 #box-dash>button{padding:4px;text-align:left}
 #list{grid-template-columns:minmax(0,1fr)}
 #list>div{padding:2px 0}
+
+/* Mode grid (produk) */
 body[data-grid="1"] #list{grid-template-columns:repeat(auto-fill,minmax(min(100%,max(120px,calc(20% - 2px))),1fr))}
-body[data-grid="1"] #list img{width:100%;height:75px;object-fit:cover;display:block}
+body[data-grid="1"] #list img{display:block;width:100%;height:75px;object-fit:cover}
+
+/* Nota */
 #tape{width:100%;max-width:280px;white-space:pre-wrap;font:11px/1.2 monospace}
-@media print{body{padding:0}header,footer,#tools,#msg{display:none!important}#tape{width:58mm!important;max-width:none}}
+
+@media print{
+  body{padding:0}
+  header,footer,#tools,#msg{display:none!important}
+  #tape{width:58mm!important;max-width:none}
+}
