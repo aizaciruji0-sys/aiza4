@@ -20,20 +20,38 @@ function initDB(cb){
     req.onerror=()=>{cb?.(null);};
   }catch(_){cb?.(null);}
 }
-function idbPut(val,key,st='kv'){if(!db)return;try{const tx=db.transaction(st,'readwrite');st==='mut'?tx.objectStore(st).put(val):tx.objectStore(st).put(val,key);}catch{}}
+function idbPut(val,key=null,st='kv'){
+  if(!db)return;
+  try{
+    const tx=db.transaction(st,'readwrite');
+    const s=tx.objectStore(st);
+    if(st==='mut')s.put(val);
+    else if(key!=null)s.put(val,key);
+    else s.put(val);
+  }catch(_){}
+}
 function idbGet(key,st='kv'){return new Promise(res=>{if(!db)return res(null);try{const rq=db.transaction(st,'readonly').objectStore(st).get(key);rq.onsuccess=()=>res(rq.result);rq.onerror=()=>res(null);}catch{res(null);}});}
 function idbGetAll(st='mut'){return new Promise(res=>{if(!db)return res([]);try{const rq=db.transaction(st,'readonly').objectStore(st).getAll();rq.onsuccess=()=>res(rq.result||[]);rq.onerror=()=>res([]);}catch{res([]);}});}
 function idbClearStore(st){if(!db)return;try{if(db.objectStoreNames.contains(st))db.transaction(st,'readwrite').objectStore(st).clear();}catch{}}
 function idbDelKeys(keys,st='mut'){if(!db||!keys?.length)return;try{const tx=db.transaction(st,'readwrite'),s=tx.objectStore(st);keys.forEach(k=>s.delete(k));}catch{}}
 
 function save(row,targetTable=K.cur,actionType=2){
-  const item={i:Date.now().toString(36)+Math.random().toString(36).slice(2,6),t:TI(targetTable),y:actionType,r:Array.isArray(row)?row:Object.values(row),ts:Date.now()};
-  idbPut(item,null,'mut');ch.postMessage('kick');
+  const tIdx=TI(targetTable);
+  const item={
+    i:Date.now().toString(36)+Math.random().toString(36).slice(2,6),
+    t:tIdx>-1?tIdx:targetTable,
+    tn:targetTable,
+    y:actionType,
+    r:Array.isArray(row)?row:Object.values(row),
+    ts:Date.now()
+  };
+  idbPut(item,null,'mut');
+  ch.postMessage('kick');
   if(!syncing){clearTimeout(syncDebounce);syncDebounce=setTimeout(()=>syn(false),50);}
 }
 
 async function req(p={}){
-  p.u=p.u||L.u||'';
+  p.u=p.u||L.u||K.u||'admin';
   if(HARD.d1Url&&['pull_batch','manifest','push'].includes(p.a)){
     try{
       const res=await fetch(HARD.d1Url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});
@@ -46,7 +64,7 @@ async function req(p={}){
   return new Promise(res=>{
     if(W.google?.script?.run){W.google.script.run.withSuccessHandler(r=>res({ok:r?.ok??r?.s==='ok',...r})).withFailureHandler(e=>res({ok:false,e})).core(p);return;}
     if(HARD.gasUrl&&/^https?:\/\//i.test(HARD.gasUrl)){
-      fetch(HARD.gasUrl,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(p)}).then(r=>r.json()).then(j=>res({ok:j?.ok??j?.s==='ok',...j})).catch(e=>res({ok:false,e}));return;
+      fetch(HARD.gasUrl,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(p),redirect:'follow'}).then(r=>r.json()).then(j=>res({ok:j?.ok??j?.s==='ok',...j})).catch(e=>res({ok:false,e}));return;
     }
     res({ok:false,e:'offline'});
   });
@@ -65,7 +83,11 @@ async function syn(force=false){
 
     if(muts.length){
       const pushRes=await req({a:'push',m:muts,tn:tables,db:K.db,cols:K.cols,shs:K.shs,gasUrl:HARD.gasUrl});
-      if(pushRes?.ok){idbDelKeys(muts.map(x=>x.i),'mut');m=pushRes.manifest||pushRes.data?.manifest;isSuccess=true;}
+      if(pushRes?.ok){
+        idbDelKeys(muts.map(x=>x.i),'mut');
+        m=pushRes.manifest||pushRes.data?.manifest;
+        isSuccess=true;
+      }
     }
 
     if(!m)m=(await req({a:'manifest',tn:tables,cols:K.cols}))?.data||(await req({a:'manifest',tn:tables,cols:K.cols}));
