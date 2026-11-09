@@ -81,10 +81,19 @@ async function syn(force=false){
     const ver=JSON.parse(L.vs||'[]'),muts=await idbGetAll('mut');
     let m=null;
 
-    if(muts.length){
-      const pushRes=await req({a:'push',m:muts,tn:tables,db:K.db,cols:K.cols,shs:K.shs,gasUrl:HARD.gasUrl});
+    // Saat tombol refresh atau ada mutasi, dorong mutasi + snapshot dataset lokal
+    if(muts.length || force){
+      const pushRes=await req({
+        a:'push',
+        m:muts,
+        tn:tables,
+        db:K.db,
+        cols:K.cols,
+        shs:K.shs,
+        gasUrl:HARD.gasUrl
+      });
       if(pushRes?.ok){
-        idbDelKeys(muts.map(x=>x.i),'mut');
+        if(muts.length)idbDelKeys(muts.map(x=>x.i),'mut');
         m=pushRes.manifest||pushRes.data?.manifest;
         isSuccess=true;
       }
@@ -553,6 +562,7 @@ const actions={
   },
   menu:()=>{if(K.v==='menu'){dom.q.value='';K.v='dash';}else{K.v='menu';dom.q.value='';}render();},
   refresh:async()=>{
+    // Memicu Full Tri-Way Dataset Sync (Frontend -> D1 -> Google Sheets -> Frontend)
     const ok = await syn(true);
     if(!ok)msg('offline');
     else msg();
