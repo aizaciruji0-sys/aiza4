@@ -193,7 +193,7 @@ const parentOf=s=>s==='produk_jual'?'penjualan':(s==='produk_beli'?'pembelian':n
 const fkCol=s=>s==='produk_jual'?'idpenjualan':(s==='produk_beli'?'idpembelian':(s==='cicil'?'idjual':null));
 const STOCK_SHEETS=['produk_jual','produk_beli','ecer'];
 const NO_ADD=['penjualan','pembelian','produk_jual','produk_beli','cicil','ecer'];
-const EXEMPT=['back','menu','q','dir','grid','closemsg','more','reset-db','add','df-today','df-clear','login','reg','bypass','pwa-install','v-toko','v-dash','v-kas','v-shop','logout','refresh','scan','stop-scan'];
+const EXEMPT=['back','menu','q','dir','grid','closemsg','more','reset-db','add','df-today','df-clear','login','reg','bypass','pwa-install','v-toko','v-dash','v-kas','v-shop','logout','refresh','scan','stop-scan','theme'];
 const FORM_VIEWS=['form','toko','schema','bulksheet','cms_detail','edit'];
 const GEO_RE=/alamat|lokasi/i;
 
@@ -206,6 +206,13 @@ const genId=()=>{const d=new Date();return String(d.getHours()).padStart(2,'0')+
 const fmtNum=n=>N(n).toLocaleString('id-ID');
 const today=()=>new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,10); // tanggal lokal, bukan UTC
 const msg=t=>{dom.msg.innerHTML='';dom.msg.hidden=!t;if(t)dom.msg.textContent=t;};
+
+/* Tema light / dark (default: ikut sistem sampai tombol ditekan) */
+const getTheme=()=>L.theme||(W.matchMedia?.('(prefers-color-scheme: dark)').matches?'dark':'light');
+const applyTheme=t=>{
+  document.documentElement.dataset.theme=t;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content',t==='dark'?'#000':'#fff');
+};
 
 /* Selector form */
 const fld=c=>dom.fb.querySelector(`[data-col="${CSS.escape(c)}"]`);
@@ -463,7 +470,7 @@ const renderChrome=()=>{
 };
 
 const renderMenuFooters=()=>{
-  addFooter('back','<');addFooter('refresh','refresh');addFooter('v-toko','toko');addFooter('reset-db','reset db');
+  addFooter('back','<');addFooter('refresh','refresh');addFooter('theme',getTheme()==='dark'?'light mode':'dark mode');addFooter('v-toko','toko');addFooter('reset-db','reset db');
   if(K.pwaEvent)addFooter('pwa-install','install pwa');
   addFooter('logout','logout');
 };
@@ -837,6 +844,7 @@ const actions={
     if(K.v!=='dash'){K.v='dash';K.idx=null;K.readyOnly=false;render();}
   },
   menu:()=>{K.v=K.v==='menu'?'dash':'menu';dom.q.value='';render();},
+  theme:()=>{const t=getTheme()==='dark'?'light':'dark';L.theme=t;applyTheme(t);render();},
   refresh:async()=>{await syn(true);render();},
 
   'df-today':()=>{K.df.from=K.df.to=today();persist();render();},
@@ -1293,6 +1301,7 @@ W.addEventListener('online',()=>syn(true));
 
 /* ---------------- Boot ---------------- */
 (()=>{
+  if(L.theme)applyTheme(L.theme);
   try{
     const d=JSON.parse(L.getItem('apex')||'null');
     if(d&&typeof d==='object'){
